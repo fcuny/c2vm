@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"flag"
@@ -230,8 +229,10 @@ func initScript(ctx context.Context, c *client.Client, image client.Image, mntDi
 	if err := json.Unmarshal(configBlob, &imageSpec); err != nil {
 		return fmt.Errorf("failed to parse the image config: %w", err)
 	}
-	initCmd := strings.Join(imageSpec.Config.Cmd, " ")
-	initEnvs := imageSpec.Config.Env
+	script, err := generateInitScript(imageSpec.Config)
+	if err != nil {
+		return err
+	}
 
 	initPath := filepath.Join(mntDir, "init.sh")
 	f, err := renameio.NewPendingFile(initPath)
@@ -240,13 +241,7 @@ func initScript(ctx context.Context, c *client.Client, image client.Image, mntDi
 	}
 	defer f.Cleanup()
 
-	writer := bufio.NewWriter(f)
-	fmt.Fprintf(writer, "#!/bin/sh\n")
-	for _, env := range initEnvs {
-		fmt.Fprintf(writer, "export %s\n", env)
-	}
-	fmt.Fprintf(writer, "%s\n", initCmd)
-	if err := writer.Flush(); err != nil {
+	if _, err := f.WriteString(script); err != nil {
 		return err
 	}
 
