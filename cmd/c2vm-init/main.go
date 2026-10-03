@@ -49,6 +49,7 @@ func run(config guest.Config) (int, error) {
 	}
 
 	mountFilesystems()
+	linkDevices()
 
 	if err := guest.SetupEtc("/"); err != nil {
 		return 0, fmt.Errorf("setting up /etc: %w", err)
@@ -215,6 +216,30 @@ func mountFilesystems() {
 		}
 		if err := unix.Mount(m.source, m.target, m.fstype, m.flags, m.data); err != nil {
 			logf("mount %s: %v", m.target, err)
+		}
+	}
+}
+
+// linkDevices creates the links container runtimes add to /dev, which
+// devtmpfs doesn't have. Images rely on them, e.g. nginx's logs are
+// symlinks to /dev/stdout and /dev/stderr.
+func linkDevices() {
+	for link, target := range map[string]string{
+		"/dev/fd":     "/proc/self/fd",
+		"/dev/stdin":  "/proc/self/fd/0",
+		"/dev/stdout": "/proc/self/fd/1",
+		"/dev/stderr": "/proc/self/fd/2",
+		"/dev/core":   "/proc/kcore",
+		// devpts is mounted with newinstance, so the multiplexer to use
+		// is its own, not devtmpfs' /dev/ptmx.
+		"/dev/ptmx": "pts/ptmx",
+	} {
+		if err := os.Remove(link); err != nil && !errors.Is(err, os.ErrNotExist) {
+			logf("remove %s: %v", link, err)
+			continue
+		}
+		if err := os.Symlink(target, link); err != nil {
+			logf("symlink %s: %v", link, err)
 		}
 	}
 }
