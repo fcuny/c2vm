@@ -1,0 +1,7 @@
+# Additions on top of Firecracker's configs, applied with merge_config.sh.
+
+# virtiofs, to share directories with the VM.
+CONFIG_VIRTIO_FS=y
+
+# Shows up in `uname -r`, to tell our builds apart.
+CONFIG_LOCALVERSION="-c2vm"

@@ -20,15 +20,13 @@ You'll need a Linux host with KVM, a running containerd, and root (the tool moun
 
 ### Kernel
 
-You'll need a kernel to boot the VM. The following builds a 6.1 kernel with the configuration Firecracker uses in its CI:
+You'll need a kernel to boot the VM. A 6.18 kernel, built from the configuration Firecracker uses in its CI, is published for amd64 and arm64 as `ghcr.io/fcuny/c2vm-kernel:6.18`, with the kernel in `/boot/kernel`. To extract it:
 
 ```sh
-git clone --depth 1 --branch v6.1 https://github.com/torvalds/linux.git linux.git
-cd linux.git
-curl -fsSL -o .config https://raw.githubusercontent.com/firecracker-microvm/firecracker/v1.17.0/resources/guest_configs/microvm-kernel-ci-x86_64-6.1.config
-make olddefconfig
-make vmlinux -j"$(nproc)"
+crane export ghcr.io/fcuny/c2vm-kernel:6.18 - | tar -x boot/kernel
 ```
+
+To build it yourself instead, on Linux, run `kernel/build.sh x86_64 out` (or `aarch64`); see [`kernel/`](kernel/).
 
 ### CNI
 
@@ -47,7 +45,7 @@ Running `make all` builds `c2vm` and `c2vm-init`, downloads Firecracker under `h
 ```sh
 sudo ./c2vm \
   -container docker.io/library/alpine:latest \
-  -kernel linux.git/vmlinux \
+  -kernel boot/kernel \
   -firecracker-binary hack/firecracker/release-v1.17.0-x86_64/firecracker-v1.17.0-x86_64
 ```
 
