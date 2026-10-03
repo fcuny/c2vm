@@ -206,13 +206,22 @@ func resizeImage(rawFile string) error {
 }
 
 func extraFiles(mntDir string) error {
-	if err := writeToFile(filepath.Join(mntDir, "etc", "hosts"), "127.0.0.1\tlocalhost\n"); err != nil {
+	etc := filepath.Join(mntDir, "etc")
+	if err := os.MkdirAll(etc, 0755); err != nil {
 		return err
 	}
-	if err := writeToFile(filepath.Join(mntDir, "etc", "resolv.conf"), "nameserver 192.168.0.1\n"); err != nil {
+	if err := writeToFile(filepath.Join(etc, "hosts"), "127.0.0.1\tlocalhost\n"); err != nil {
 		return err
 	}
-	return nil
+
+	// The firecracker SDK passes the nameservers from the CNI result to
+	// the kernel's "ip=" boot parameter, and the kernel exposes them in
+	// /proc/net/pnp in resolv.conf format.
+	resolvConf := filepath.Join(etc, "resolv.conf")
+	if err := os.Remove(resolvConf); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return os.Symlink("/proc/net/pnp", resolvConf)
 }
 
 func initScript(ctx context.Context, c *client.Client, image client.Image, mntDir string) error {

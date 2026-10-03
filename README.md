@@ -34,6 +34,8 @@ make vmlinux -j"$(nproc)"
 
 You need the CNI plugins (`bridge`, `host-local` and `firewall` from [containernetworking/plugins](https://github.com/containernetworking/plugins)) installed under `/opt/cni/bin`, along with [tc-redirect-tap](https://github.com/awslabs/tc-redirect-tap). The recommended configuration is stored under `hack/cni` and needs to be copied to `/etc/cni/conf.d`.
 
+The VM's `/etc/resolv.conf` uses the nameservers from the CNI result, which `host-local` reads from the host's `/etc/resolv.conf`. If the host runs systemd-resolved, that file points at `127.0.0.53`, which the VM can't reach: set `resolvConf` in the configuration to `/run/systemd/resolve/resolv.conf` instead.
+
 ### Firecracker binaries
 
 Running `make all` builds `c2vm`, downloads Firecracker under `hack/firecracker`, installs the CNI configuration and installs `tc-redirect-tap`.
