@@ -47,7 +47,7 @@ func Pull(ctx context.Context, ref string, platform v1.Platform) (*Image, error)
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("pulled %s (%s)\n", r.Name(), digest)
+	log.Printf("resolved %s to %s\n", r.Name(), digest)
 
 	return &Image{ref: r, image: img}, nil
 }
@@ -66,6 +66,12 @@ func (k anonymousFallback) Resolve(r authn.Resource) (authn.Authenticator, error
 		return authn.Anonymous, nil
 	}
 	return auth, nil
+}
+
+// Digest is the digest of the image's manifest, for the platform it
+// was pulled for.
+func (i *Image) Digest() (v1.Hash, error) {
+	return i.image.Digest()
 }
 
 // Config returns the image's runtime configuration: its entrypoint,

@@ -6,36 +6,62 @@ import (
 	"testing"
 )
 
-var required = []string{"-container", "docker.io/library/alpine:latest", "-kernel", "vmlinux"}
-
-func TestParseFlagsDefaults(t *testing.T) {
-	opts, err := parseFlags(required)
+func TestParseSave(t *testing.T) {
+	opts, err := parseSave([]string{"nginx:stable", "-o", "nginx.ext4", "-cache-dir", "/tmp/c2vm"})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if opts.image != "nginx:stable" || opts.out != "nginx.ext4" || opts.cacheDir != "/tmp/c2vm" {
+		t.Errorf("unexpected options: %+v", opts)
 	}
 	if opts.platform.OS != "linux" || opts.platform.Architecture != runtime.GOARCH {
 		t.Errorf("platform = %+v, want linux/%s", opts.platform, runtime.GOARCH)
 	}
-	if opts.cpus != 1 || opts.memoryMiB != 512 {
-		t.Errorf("unexpected defaults: %+v", opts)
+}
+
+func TestParseSaveDefaultCacheDir(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", "/xdg/cache")
+	t.Setenv("HOME", "/home/user")
+	opts, err := parseSave([]string{"alpine"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(opts.cacheDir, "/c2vm") {
+		t.Errorf("cache dir = %q, want a c2vm directory in the user's cache", opts.cacheDir)
 	}
 }
 
-func TestParseFlagsErrors(t *testing.T) {
+func TestParseBoot(t *testing.T) {
+	// Flags can come before or after the image.
+	opts, err := parseBoot([]string{"-kernel", "vmlinux", "alpine:3.24", "-cpus", "2", "-memory", "1024"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.image != "alpine:3.24" || opts.kernel != "vmlinux" || opts.cpus != 2 || opts.memoryMiB != 1024 {
+		t.Errorf("unexpected options: %+v", opts)
+	}
+}
+
+func TestParseErrors(t *testing.T) {
 	for _, tc := range []struct {
-		args []string
-		want string
+		parse func([]string) error
+		args  []string
+		want  string
 	}{
-		{[]string{"-kernel", "k"}, "a container is required"},
-		{[]string{"-container", "c"}, "a linux kernel is required"},
-		{append([]string{"-cpus", "0"}, required...), "-cpus"},
-		{append([]string{"-memory", "0"}, required...), "-memory"},
-		{append([]string{"-platform", "windows/amd64"}, required...), "only linux"},
-		{append([]string{"-platform", "linux/not-an-arch/x/y"}, required...), "invalid -platform"},
+		{saveErr, nil, "an image is required"},
+		{saveErr, []string{"alpine", "nginx"}, "expected one image"},
+		{saveErr, []string{"-platform", "windows/amd64", "alpine"}, "only linux"},
+		{saveErr, []string{"-platform", "linux/not-an-arch/x/y", "alpine"}, "invalid -platform"},
+		{bootErr, []string{"alpine"}, "a linux kernel is required"},
+		{bootErr, []string{"-kernel", "k", "-cpus", "0", "alpine"}, "-cpus"},
+		{bootErr, []string{"-kernel", "k", "-memory", "0", "alpine"}, "-memory"},
 	} {
-		_, err := parseFlags(tc.args)
+		err := tc.parse(tc.args)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
-			t.Errorf("parseFlags(%q) = %v, want an error containing %q", tc.args, err, tc.want)
+			t.Errorf("parsing %q = %v, want an error containing %q", tc.args, err, tc.want)
 		}
 	}
 }
+
+func saveErr(args []string) error { _, err := parseSave(args); return err }
+func bootErr(args []string) error { _, err := parseBoot(args); return err }

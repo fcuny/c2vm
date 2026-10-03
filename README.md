@@ -52,17 +52,27 @@ Running `make all` builds `c2vm` and `c2vm-init`, downloads Firecracker under `h
 
 ### Running
 
-`c2vm` installs `c2vm-init` in the image as the VM's init. It runs the image's entrypoint and command as the image's user, from its working directory and with its environment, then shuts the VM down when the command exits. `c2vm` looks for `c2vm-init` next to itself; use `-init` to point elsewhere. It must be built for the same architecture as the image.
+`c2vm save` pulls an image and converts it to an ext4 image, which it caches by digest and prints the path of:
 
 ```sh
-sudo ./c2vm \
-  -container nginx:stable-alpine3.24-perl \
-  -kernel boot/kernel \
-  -firecracker-binary hack/firecracker/release-v1.17.0-x86_64/firecracker-v1.17.0-x86_64
+./c2vm save nginx:stable-alpine3.24-perl
 ```
+
+`c2vm boot` does the same, then boots it, with the VM's console on the terminal:
+
+```sh
+sudo ./c2vm boot \
+  -kernel boot/kernel \
+  -firecracker-binary hack/firecracker/release-v1.17.0-x86_64/firecracker-v1.17.0-x86_64 \
+  nginx:stable-alpine3.24-perl
+```
+
+Booting only works on Linux, with firecracker, for now. `save` works on macOS too.
 
 Images are pulled from their registry, with short names resolved as docker does (`nginx` is `docker.io/library/nginx:latest`). Credentials come from your docker or podman login; public images are pulled anonymously when there are none, or when they can't be looked up.
 
-The image is written to `-out` (`container.img` by default) as a read-only ext4 filesystem. At boot, `c2vm-init` runs from an initramfs, mounts the image with a writable in-memory layer on top, and runs the image's command; changes are lost when the VM stops.
+Images are cached in `~/.cache/c2vm` on Linux and `~/Library/Caches/c2vm` on macOS (`-cache-dir` to change it), so booting an image again only checks which digest its tag points to. The cached image is a read-only ext4 filesystem. At boot, `c2vm-init` runs from an initramfs: it mounts the image with a writable in-memory layer on top, and runs the image's entrypoint and command as the image's user, from its working directory and with its environment. Changes are lost when the VM stops.
 
-Run `./c2vm -h` for the other options: the VM's CPUs and memory, the image's platform, the firecracker socket, and the CNI network.
+`c2vm` looks for `c2vm-init` next to itself; use `-init` to point elsewhere. It must be built for the same architecture as the image.
+
+Run `./c2vm <command> -h` for the other options: the VM's CPUs and memory, the image's platform, the firecracker socket, and the CNI network.

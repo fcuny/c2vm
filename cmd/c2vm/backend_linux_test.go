@@ -8,7 +8,7 @@ import (
 )
 
 func TestFirecrackerBackendFlags(t *testing.T) {
-	opts, err := parseFlags(required)
+	opts, err := parseBoot([]string{"-kernel", "vmlinux", "alpine"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -16,7 +16,7 @@ func TestFirecrackerBackendFlags(t *testing.T) {
 		t.Errorf("backend() without -firecracker-binary = %v", err)
 	}
 
-	opts, err = parseFlags(append([]string{"-firecracker-binary", "/usr/bin/firecracker"}, required...))
+	opts, err = parseBoot([]string{"-kernel", "vmlinux", "-firecracker-binary", "/usr/bin/firecracker", "alpine"})
 	if err != nil {
 		t.Fatal(err)
 	}
