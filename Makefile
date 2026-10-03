@@ -1,5 +1,7 @@
-FC_VERSION?=0.24.3-x86_64
-FC_BINARY?=hack/firecracker/firecracker-v$(FC_VERSION)
+FC_VERSION?=1.17.0
+FC_ARCH?=x86_64
+FC_RELEASE=v$(FC_VERSION)-$(FC_ARCH)
+FC_BINARY?=hack/firecracker/release-$(FC_RELEASE)/firecracker-$(FC_RELEASE)
 
 FCNET_CONFIG?=/etc/cni/conf.d/50-c2vm.conflist
 CNI_BIN_ROOT?=/opt/cni/bin
@@ -11,7 +13,7 @@ build:
 
 $(FC_BINARY):
 	@mkdir -p hack/firecracker
-	@curl -L -o hack/firecracker/firecracker.tgz -s https://github.com/firecracker-microvm/firecracker/releases/download/v0.24.3/firecracker-v$(FC_VERSION).tgz
+	@curl -fL -o hack/firecracker/firecracker.tgz -s https://github.com/firecracker-microvm/firecracker/releases/download/v$(FC_VERSION)/firecracker-$(FC_RELEASE).tgz
 	@tar xvzf hack/firecracker/firecracker.tgz -C hack/firecracker
 
 $(FCNET_CONFIG):
@@ -20,7 +22,7 @@ $(FCNET_CONFIG):
 
 $(CNI_TAP_PLUGIN):
 	@go install github.com/awslabs/tc-redirect-tap/cmd/tc-redirect-tap@latest
-	@sudo cp ${GOPATH}/bin/tc-redirect-tap $(CNI_BIN_ROOT)
+	@sudo cp $(shell go env GOPATH)/bin/tc-redirect-tap $(CNI_BIN_ROOT)
 
 .PHONY: all
 all: build $(FC_BINARY) $(FCNET_CONFIG) $(CNI_TAP_PLUGIN)

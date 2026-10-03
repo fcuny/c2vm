@@ -259,10 +259,9 @@ func bootVM(ctx context.Context, rawImage, kernel, firecrackerBinary, metricsFif
 		Drives:          devices,
 		MetricsFifo:     metricsFifo,
 		MachineCfg: models.MachineConfiguration{
-			VcpuCount:   firecracker.Int64(1),
-			CPUTemplate: models.CPUTemplate("C3"),
-			Smt:         firecracker.Bool(true),
-			MemSizeMib:  firecracker.Int64(512),
+			VcpuCount:  firecracker.Int64(1),
+			Smt:        firecracker.Bool(true),
+			MemSizeMib: firecracker.Int64(512),
 		},
 		NetworkInterfaces: []firecracker.NetworkInterface{
 			{
