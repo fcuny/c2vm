@@ -1,4 +1,4 @@
-module github.com/fcuny/containerd-to-vm
+module fcuny.net/containerd-to-vm
 
 go 1.16
 
