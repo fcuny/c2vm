@@ -26,6 +26,16 @@ You'll need a kernel to boot the VM. A 6.18 kernel, built from the configuration
 crane export ghcr.io/fcuny/c2vm-kernel:6.18 - | tar -x boot/kernel
 ```
 
+Or with podman (the image has no command, so `create` needs a placeholder; the container is never started):
+
+```sh
+podman create --name c2vm-kernel ghcr.io/fcuny/c2vm-kernel:6.18 none
+podman export c2vm-kernel | tar -x boot/kernel
+podman rm c2vm-kernel
+```
+
+Both pick the kernel for the host's architecture; pass `--platform linux/arm64` (or `linux/amd64`) to get the other one.
+
 To build it yourself instead, on Linux, run `kernel/build.sh x86_64 out` (or `aarch64`); see [`kernel/`](kernel/).
 
 ### CNI
