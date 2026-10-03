@@ -3,11 +3,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
@@ -22,49 +24,93 @@ import (
 )
 
 const (
-	containerdSock   = "/run/containerd/containerd.sock"
 	defaultNamespace = "c2vm"
 	initPath         = "/init.sh"
 )
 
-var (
-	firecrackerSock = filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "firecracker.sock")
-	platform        = platforms.Only(ocispec.Platform{
-		OS:           "linux",
-		Architecture: "amd64",
-	})
-)
+type options struct {
+	container         string
+	outFile           string
+	kernel            string
+	firecrackerBinary string
+	metricsFifo       string
+	containerdSocket  string
+	socketPath        string
+	cniNetwork        string
+	size              string
+	cpus              int64
+	memoryMiB         int64
+	platform          ocispec.Platform
+}
 
-func main() {
+func parseFlags(args []string) (options, error) {
 	var (
-		containerName     = flag.String("container", "", "Name of the container")
-		outFile           = flag.String("out", "container.img", "Path to store the image")
-		kernel            = flag.String("kernel", "", "Path to the linux kernel image")
-		firecrackerBinary = flag.String("firecracker-binary", "", "Path to the firecracker binary")
-		metricsFifo       = flag.String("metrics-fifo", "", "FIFO to the firecracker metrics")
+		opts     options
+		platform string
 	)
 
-	flag.Parse()
+	fs := flag.NewFlagSet("c2vm", flag.ContinueOnError)
+	fs.StringVar(&opts.container, "container", "", "Image to boot, as a fully qualified reference (e.g. docker.io/library/alpine:latest)")
+	fs.StringVar(&opts.outFile, "out", "container.img", "Path to store the image")
+	fs.StringVar(&opts.kernel, "kernel", "", "Path to the linux kernel image")
+	fs.StringVar(&opts.firecrackerBinary, "firecracker-binary", "", "Path to the firecracker binary")
+	fs.StringVar(&opts.metricsFifo, "metrics-fifo", "", "FIFO to the firecracker metrics")
+	fs.StringVar(&opts.containerdSocket, "containerd", "/run/containerd/containerd.sock", "Path to containerd's socket")
+	fs.StringVar(&opts.socketPath, "socket", "", "Path for firecracker's API socket (default: in a temporary directory)")
+	fs.StringVar(&opts.cniNetwork, "cni-network", "c2vm", "Name of the CNI network to attach the VM to")
+	fs.StringVar(&opts.size, "size", "2G", "Size of the image before it's shrunk to fit, as understood by fallocate")
+	fs.Int64Var(&opts.cpus, "cpus", 1, "Number of vCPUs")
+	fs.Int64Var(&opts.memoryMiB, "memory", 512, "Memory for the VM, in MiB")
+	fs.StringVar(&platform, "platform", "linux/"+runtime.GOARCH, "Platform of the image to pull")
 
-	if *containerName == "" {
-		log.Fatal("a container is required")
+	if err := fs.Parse(args); err != nil {
+		return options{}, err
 	}
 
-	if *kernel == "" {
-		log.Fatal("a linux kernel is required")
+	if opts.container == "" {
+		return options{}, errors.New("a container is required")
+	}
+	if opts.kernel == "" {
+		return options{}, errors.New("a linux kernel is required")
+	}
+	if opts.firecrackerBinary == "" {
+		return options{}, errors.New("the path to the firecracker binary is required")
+	}
+	if opts.cpus < 1 {
+		return options{}, errors.New("-cpus must be at least 1")
+	}
+	if opts.memoryMiB < 1 {
+		return options{}, errors.New("-memory must be at least 1")
 	}
 
-	if *firecrackerBinary == "" {
-		log.Fatal("the path to the firecracker binary is required")
+	p, err := platforms.Parse(platform)
+	if err != nil {
+		return options{}, fmt.Errorf("invalid -platform: %w", err)
+	}
+	if p.OS != "linux" {
+		return options{}, fmt.Errorf("invalid -platform %q: only linux images can be booted", platform)
+	}
+	opts.platform = p
+
+	return opts, nil
+}
+
+func main() {
+	opts, err := parseFlags(os.Args[1:])
+	if errors.Is(err, flag.ErrHelp) {
+		return
+	}
+	if err != nil {
+		log.Fatal(err)
 	}
 
-	if err := run(*containerName, *outFile, *kernel, *firecrackerBinary, *metricsFifo); err != nil {
+	if err := run(opts); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(containerName, outFile, kernel, firecrackerBinary, metricsFifo string) error {
-	c, err := client.New(containerdSock)
+func run(opts options) error {
+	c, err := client.New(opts.containerdSocket)
 	if err != nil {
 		return fmt.Errorf("failed to create a client for containerd: %w", err)
 	}
@@ -77,37 +123,47 @@ func run(containerName, outFile, kernel, firecrackerBinary, metricsFifo string) 
 	}
 	defer done(ctx)
 
-	img, err := image.Pull(ctx, c, containerName, platform)
+	img, err := image.Pull(ctx, c, opts.container, platforms.Only(opts.platform))
 	if err != nil {
 		return err
 	}
 
-	if err := buildRootfs(ctx, img, outFile); err != nil {
+	if err := buildRootfs(ctx, img, opts.outFile, opts.size); err != nil {
 		return err
 	}
 
-	if err := rootfs.Shrink(outFile); err != nil {
-		return fmt.Errorf("failed to resize the image %s: %w", outFile, err)
+	if err := rootfs.Shrink(opts.outFile); err != nil {
+		return fmt.Errorf("failed to resize the image %s: %w", opts.outFile, err)
+	}
+
+	socketPath := opts.socketPath
+	if socketPath == "" {
+		dir, err := os.MkdirTemp("", "c2vm-firecracker")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(dir)
+		socketPath = filepath.Join(dir, "firecracker.sock")
 	}
 
 	return vm.Run(ctx, vm.Config{
-		FirecrackerBinary: firecrackerBinary,
-		SocketPath:        firecrackerSock,
-		Kernel:            kernel,
+		FirecrackerBinary: opts.firecrackerBinary,
+		SocketPath:        socketPath,
+		Kernel:            opts.kernel,
 		Init:              initPath,
-		RootDrive:         outFile,
-		MetricsFifo:       metricsFifo,
-		CPUs:              1,
-		MemoryMiB:         512,
-		CNINetwork:        "c2vm",
+		RootDrive:         opts.outFile,
+		MetricsFifo:       opts.metricsFifo,
+		CPUs:              opts.cpus,
+		MemoryMiB:         opts.memoryMiB,
+		CNINetwork:        opts.cniNetwork,
 	})
 }
 
 // buildRootfs creates the image at rawFile, mounts it, and populates it
 // with the container's filesystem. The image is always unmounted before
 // returning.
-func buildRootfs(ctx context.Context, img *image.Image, rawFile string) (err error) {
-	if err := rootfs.Create(rawFile, "2G"); err != nil {
+func buildRootfs(ctx context.Context, img *image.Image, rawFile, size string) (err error) {
+	if err := rootfs.Create(rawFile, size); err != nil {
 		return err
 	}
 

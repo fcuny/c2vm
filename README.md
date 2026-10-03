@@ -50,3 +50,5 @@ sudo ./c2vm \
 ```
 
 containerd needs fully qualified image references (`docker.io/library/alpine:latest`, not `alpine`).
+
+Run `./c2vm -h` for the other options: the VM's CPUs and memory, the image's platform, the containerd and firecracker sockets, and the CNI network.
