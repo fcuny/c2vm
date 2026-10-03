@@ -11,19 +11,14 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/containerd/containerd/v2/client"
-	"github.com/containerd/containerd/v2/pkg/namespaces"
-	"github.com/containerd/platforms"
-	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/renameio/v2"
 
 	"fcuny.net/containerd-to-vm/internal/guest"
 	"fcuny.net/containerd-to-vm/internal/image"
 	"fcuny.net/containerd-to-vm/internal/initramfs"
-	"fcuny.net/containerd-to-vm/internal/rootfs"
 	"fcuny.net/containerd-to-vm/internal/vm"
 )
-
-const defaultNamespace = "c2vm"
 
 type options struct {
 	container         string
@@ -32,13 +27,11 @@ type options struct {
 	firecrackerBinary string
 	initBinary        string
 	metricsFifo       string
-	containerdSocket  string
 	socketPath        string
 	cniNetwork        string
-	size              string
 	cpus              int64
 	memoryMiB         int64
-	platform          ocispec.Platform
+	platform          v1.Platform
 }
 
 func parseFlags(args []string) (options, error) {
@@ -48,16 +41,14 @@ func parseFlags(args []string) (options, error) {
 	)
 
 	fs := flag.NewFlagSet("c2vm", flag.ContinueOnError)
-	fs.StringVar(&opts.container, "container", "", "Image to boot, as a fully qualified reference (e.g. docker.io/library/alpine:latest)")
+	fs.StringVar(&opts.container, "container", "", "Image to boot (e.g. alpine:3.24, or ghcr.io/owner/image:tag)")
 	fs.StringVar(&opts.outFile, "out", "container.img", "Path to store the image")
 	fs.StringVar(&opts.kernel, "kernel", "", "Path to the linux kernel image")
 	fs.StringVar(&opts.firecrackerBinary, "firecracker-binary", "", "Path to the firecracker binary")
 	fs.StringVar(&opts.initBinary, "init", "", "Path to the c2vm-init binary (default: c2vm-init next to c2vm)")
 	fs.StringVar(&opts.metricsFifo, "metrics-fifo", "", "FIFO to the firecracker metrics")
-	fs.StringVar(&opts.containerdSocket, "containerd", "/run/containerd/containerd.sock", "Path to containerd's socket")
 	fs.StringVar(&opts.socketPath, "socket", "", "Path for firecracker's API socket (default: in a temporary directory)")
 	fs.StringVar(&opts.cniNetwork, "cni-network", "c2vm", "Name of the CNI network to attach the VM to")
-	fs.StringVar(&opts.size, "size", "2G", "Size of the image before it's shrunk to fit, as understood by fallocate")
 	fs.Int64Var(&opts.cpus, "cpus", 1, "Number of vCPUs")
 	fs.Int64Var(&opts.memoryMiB, "memory", 512, "Memory for the VM, in MiB")
 	fs.StringVar(&platform, "platform", "linux/"+runtime.GOARCH, "Platform of the image to pull")
@@ -82,14 +73,14 @@ func parseFlags(args []string) (options, error) {
 		return options{}, errors.New("-memory must be at least 1")
 	}
 
-	p, err := platforms.Parse(platform)
+	p, err := v1.ParsePlatform(platform)
 	if err != nil {
 		return options{}, fmt.Errorf("invalid -platform: %w", err)
 	}
 	if p.OS != "linux" {
 		return options{}, fmt.Errorf("invalid -platform %q: only linux images can be booted", platform)
 	}
-	opts.platform = p
+	opts.platform = *p
 
 	return opts, nil
 }
@@ -114,33 +105,19 @@ func run(opts options) error {
 		return err
 	}
 
-	c, err := client.New(opts.containerdSocket)
-	if err != nil {
-		return fmt.Errorf("failed to create a client for containerd: %w", err)
-	}
-	defer c.Close()
+	ctx := context.Background()
 
-	ctx := namespaces.WithNamespace(context.Background(), defaultNamespace)
-	ctx, done, err := c.WithLease(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get a lease: %w", err)
-	}
-	defer done(ctx)
-
-	img, err := image.Pull(ctx, c, opts.container, platforms.Only(opts.platform))
+	img, err := image.Pull(ctx, opts.container, opts.platform)
 	if err != nil {
 		return err
 	}
 
-	if err := buildRootfs(ctx, img, opts.outFile, opts.size); err != nil {
+	if err := writeImage(img, opts.outFile); err != nil {
 		return err
 	}
+	log.Printf("wrote %s\n", opts.outFile)
 
-	if err := rootfs.Shrink(opts.outFile); err != nil {
-		return fmt.Errorf("failed to resize the image %s: %w", opts.outFile, err)
-	}
-
-	imageConfig, err := img.Config(ctx)
+	imageConfig, err := img.Config()
 	if err != nil {
 		return err
 	}
@@ -178,29 +155,18 @@ func run(opts options) error {
 	})
 }
 
-// buildRootfs creates the image at rawFile, mounts it, and populates it
-// with the container's filesystem. The image is always unmounted before
-// returning.
-func buildRootfs(ctx context.Context, img *image.Image, rawFile, size string) (err error) {
-	if err := rootfs.Create(rawFile, size); err != nil {
-		return err
-	}
-
-	mntDir, unmount, err := rootfs.Mount(rawFile)
+// writeImage writes the image's filesystem to path, atomically.
+func writeImage(img *image.Image, path string) error {
+	f, err := renameio.NewPendingFile(path, renameio.WithPermissions(0644))
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if uerr := unmount(); uerr != nil && err == nil {
-			err = uerr
-		}
-	}()
+	defer f.Cleanup()
 
-	if err := img.Unpack(ctx, mntDir); err != nil {
-		return fmt.Errorf("failed to extract the container: %w", err)
+	if err := img.WriteExt4(f); err != nil {
+		return err
 	}
-
-	return nil
+	return f.CloseAtomicallyReplace()
 }
 
 // findInit returns the path to the c2vm-init binary: path if set,

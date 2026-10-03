@@ -16,7 +16,7 @@ func TestParseFlagsDefaults(t *testing.T) {
 	if opts.platform.OS != "linux" || opts.platform.Architecture != runtime.GOARCH {
 		t.Errorf("platform = %+v, want linux/%s", opts.platform, runtime.GOARCH)
 	}
-	if opts.cpus != 1 || opts.memoryMiB != 512 || opts.size != "2G" {
+	if opts.cpus != 1 || opts.memoryMiB != 512 {
 		t.Errorf("unexpected defaults: %+v", opts)
 	}
 	if opts.socketPath != "" {

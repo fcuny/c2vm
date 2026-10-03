@@ -14,9 +14,11 @@ A recent [article](https://fly.io/blog/docker-without-docker/) from the team at 
 
 As I've been interested in playing with both containerd's API and firecracker, I thought it would be a good opportunity to try to implement this.
 
+It has since moved away from containerd: c2vm pulls images straight from registries and converts them to an ext4 image without mounting anything, so building an image needs neither a daemon nor root.
+
 ## How
 
-You'll need a Linux host with KVM, a running containerd, and root (the tool mounts a loop device). You'll also need a few things before you can run it.
+You'll need a Linux host with KVM, and root to set up the VM's network with CNI. You'll also need a few things before you can run it.
 
 ### Kernel
 
@@ -54,11 +56,13 @@ Running `make all` builds `c2vm` and `c2vm-init`, downloads Firecracker under `h
 
 ```sh
 sudo ./c2vm \
-  -container docker.io/library/alpine:latest \
+  -container nginx:stable-alpine3.24-perl \
   -kernel boot/kernel \
   -firecracker-binary hack/firecracker/release-v1.17.0-x86_64/firecracker-v1.17.0-x86_64
 ```
 
-containerd needs fully qualified image references (`docker.io/library/alpine:latest`, not `alpine`).
+Images are pulled from their registry, with short names resolved as docker does (`nginx` is `docker.io/library/nginx:latest`). Credentials come from your docker or podman login; public images are pulled anonymously when there are none, or when they can't be looked up.
 
-Run `./c2vm -h` for the other options: the VM's CPUs and memory, the image's platform, the containerd and firecracker sockets, and the CNI network.
+The image is written to `-out` (`container.img` by default) as a read-only ext4 filesystem. At boot, `c2vm-init` runs from an initramfs, mounts the image with a writable in-memory layer on top, and runs the image's command; changes are lost when the VM stops.
+
+Run `./c2vm -h` for the other options: the VM's CPUs and memory, the image's platform, the firecracker socket, and the CNI network.

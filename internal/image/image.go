@@ -1,90 +1,99 @@
-// Package image pulls container images through containerd and unpacks
-// them into a directory.
+// Package image pulls container images from registries and writes
+// their filesystem as an ext4 image.
 package image
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 
-	"github.com/containerd/containerd/v2/client"
-	"github.com/containerd/containerd/v2/core/content"
-	"github.com/containerd/containerd/v2/core/images"
-	"github.com/containerd/platforms"
-	"github.com/moby/go-archive"
+	"github.com/Microsoft/hcsshim/ext4/tar2ext4"
+	"github.com/google/go-containerregistry/pkg/authn"
+	"github.com/google/go-containerregistry/pkg/name"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-// Image is a container image that has been pulled into containerd's
-// content store.
+// Image is a container image in a registry. Its layers are fetched when
+// it's written out.
 type Image struct {
-	client   *client.Client
-	image    client.Image
-	platform platforms.MatchComparer
+	ref   name.Reference
+	image v1.Image
 }
 
-// Pull fetches ref for the given platform.
-func Pull(ctx context.Context, c *client.Client, ref string, platform platforms.MatchComparer) (*Image, error) {
-	image, err := c.Pull(ctx, ref, client.WithPlatformMatcher(platform))
+// Pull resolves ref for the given platform. ref can be a short name, as
+// with docker: "alpine" is docker.io/library/alpine:latest.
+// Credentials come from the docker and podman configurations, as with
+// `docker login` or `podman login`.
+func Pull(ctx context.Context, ref string, platform v1.Platform) (*Image, error) {
+	r, err := name.ParseReference(ref)
 	if err != nil {
-		return nil, fmt.Errorf("failed to pull the container %s: %w", ref, err)
+		return nil, fmt.Errorf("invalid image reference %q: %w", ref, err)
 	}
 
-	imageSize, err := image.Usage(ctx, client.WithUsageManifestLimit(1))
+	img, err := remote.Image(r,
+		remote.WithContext(ctx),
+		remote.WithPlatform(platform),
+		remote.WithAuthFromKeychain(anonymousFallback{authn.DefaultKeychain}),
+	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get the size of the image: %w", err)
+		return nil, fmt.Errorf("failed to pull %s: %w", r, err)
 	}
 
-	log.Printf("pulled %s (%d bytes)\n", image.Name(), imageSize)
+	digest, err := img.Digest()
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("pulled %s (%s)\n", r.Name(), digest)
 
-	return &Image{client: c, image: image, platform: platform}, nil
+	return &Image{ref: r, image: img}, nil
 }
 
-// Unpack extracts the image's layers, in order, into dir.
-func (i *Image) Unpack(ctx context.Context, dir string) error {
-	manifest, err := images.Manifest(ctx, i.client.ContentStore(), i.image.Target(), i.platform)
-	if err != nil {
-		return fmt.Errorf("failed to get the manifest: %w", err)
-	}
-
-	for _, desc := range manifest.Layers {
-		log.Printf("extracting layer %s\n", desc.Digest.String())
-		if err := i.unpackLayer(ctx, desc, dir); err != nil {
-			return fmt.Errorf("layer %s: %w", desc.Digest, err)
-		}
-	}
-
-	return nil
+// anonymousFallback pulls anonymously when credentials can't be looked
+// up, e.g. when the docker configuration names a credential helper that
+// isn't installed, so public images still work.
+type anonymousFallback struct {
+	authn.Keychain
 }
 
-func (i *Image) unpackLayer(ctx context.Context, desc ocispec.Descriptor, dir string) error {
-	layer, err := i.client.ContentStore().ReaderAt(ctx, desc)
+func (k anonymousFallback) Resolve(r authn.Resource) (authn.Authenticator, error) {
+	auth, err := k.Keychain.Resolve(r)
 	if err != nil {
-		return err
+		log.Printf("warning: can't look up credentials for %s, pulling anonymously: %v\n", r.RegistryStr(), err)
+		return authn.Anonymous, nil
 	}
-	defer layer.Close()
-
-	return archive.Untar(content.NewReader(layer), dir, &archive.TarOptions{NoLchown: true})
+	return auth, nil
 }
 
 // Config returns the image's runtime configuration: its entrypoint,
 // command, environment, working directory and so on.
-func (i *Image) Config(ctx context.Context) (ocispec.ImageConfig, error) {
-	config, err := images.Config(ctx, i.client.ContentStore(), i.image.Target(), i.platform)
+func (i *Image) Config() (ocispec.ImageConfig, error) {
+	cf, err := i.image.ConfigFile()
 	if err != nil {
-		return ocispec.ImageConfig{}, err
+		return ocispec.ImageConfig{}, fmt.Errorf("failed to read the image config: %w", err)
 	}
 
-	configBlob, err := content.ReadBlob(ctx, i.client.ContentStore(), config)
-	if err != nil {
-		return ocispec.ImageConfig{}, err
-	}
+	return ocispec.ImageConfig{
+		User:       cf.Config.User,
+		Env:        cf.Config.Env,
+		Entrypoint: cf.Config.Entrypoint,
+		Cmd:        cf.Config.Cmd,
+		WorkingDir: cf.Config.WorkingDir,
+	}, nil
+}
 
-	var imageSpec ocispec.Image
-	if err := json.Unmarshal(configBlob, &imageSpec); err != nil {
-		return ocispec.ImageConfig{}, fmt.Errorf("failed to parse the image config: %w", err)
-	}
+// WriteExt4 writes the image's filesystem, with its layers applied in
+// order, to w as an ext4 filesystem. The filesystem is compact: it has
+// no free space, and is meant to be mounted read-only.
+func (i *Image) WriteExt4(w io.ReadWriteSeeker) error {
+	rc := mutate.Extract(i.image)
+	defer rc.Close()
 
-	return imageSpec.Config, nil
+	if err := tar2ext4.Convert(rc, w); err != nil {
+		return fmt.Errorf("failed to convert %s to ext4: %w", i.ref, err)
+	}
+	return nil
 }
