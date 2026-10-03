@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 
 	"github.com/google/renameio/v2"
@@ -64,27 +63,6 @@ func Shrink(path string) error {
 	}
 
 	return runCommand("resize2fs", "-M", path)
-}
-
-// WriteExtraFiles adds the files the VM needs on top of the container's
-// filesystem, mounted at dir.
-func WriteExtraFiles(dir string) error {
-	etc := filepath.Join(dir, "etc")
-	if err := os.MkdirAll(etc, 0755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(etc, "hosts"), []byte("127.0.0.1\tlocalhost\n"), 0644); err != nil {
-		return err
-	}
-
-	// The firecracker SDK passes the nameservers from the CNI result to
-	// the kernel's "ip=" boot parameter, and the kernel exposes them in
-	// /proc/net/pnp in resolv.conf format.
-	resolvConf := filepath.Join(etc, "resolv.conf")
-	if err := os.Remove(resolvConf); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return os.Symlink("/proc/net/pnp", resolvConf)
 }
 
 // runCommand runs a command, and includes its output in the error if it

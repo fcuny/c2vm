@@ -14,11 +14,28 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
+// Paths in the initramfs.
 const (
-	// InitPath is where the init binary is installed in the image.
-	InitPath = "/c2vm/init"
-	// ConfigPath is where the configuration is written in the image.
+	// ConfigPath is where the configuration is stored.
 	ConfigPath = "/c2vm/config.json"
+	// LowerDir is where init mounts the image, read-only.
+	LowerDir = "/c2vm/lower"
+	// WritableDir is where init mounts the tmpfs that holds the
+	// overlay's writable layer.
+	WritableDir = "/c2vm/rw"
+	// NewRootDir is where init assembles the overlay before switching
+	// to it.
+	NewRootDir = "/c2vm/root"
+)
+
+// How init stops the VM once the command exits.
+const (
+	// ShutdownReboot reboots the guest. Firecracker exits when the guest
+	// reboots.
+	ShutdownReboot = "reboot"
+	// ShutdownPowerOff powers the guest off. Virtualization.framework
+	// restarts a guest that reboots, and only stops one that powers off.
+	ShutdownPowerOff = "poweroff"
 )
 
 // DefaultPath is the PATH used when the image doesn't set one, the same
@@ -37,6 +54,9 @@ type Config struct {
 	// User is the user to run the command as, in any of the forms Docker
 	// accepts: user, uid, user:group, uid:gid, and so on.
 	User string `json:"user,omitempty"`
+	// Shutdown is how to stop the VM once the command exits:
+	// ShutdownReboot (the default) or ShutdownPowerOff.
+	Shutdown string `json:"shutdown,omitempty"`
 }
 
 // FromImage returns the configuration that runs the image the way a
@@ -55,18 +75,9 @@ func FromImage(config ocispec.ImageConfig) (Config, error) {
 	}, nil
 }
 
-// Write stores the configuration in the image mounted at root.
-func (c Config) Write(root string) error {
-	data, err := json.MarshalIndent(c, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	path := filepath.Join(root, ConfigPath)
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0644)
+// Marshal encodes the configuration in the format ReadConfig reads.
+func (c Config) Marshal() ([]byte, error) {
+	return json.MarshalIndent(c, "", "  ")
 }
 
 // ReadConfig reads the configuration from path.
@@ -82,6 +93,13 @@ func ReadConfig(path string) (Config, error) {
 	}
 	if len(c.Args) == 0 {
 		return Config{}, fmt.Errorf("%s has no command to run", path)
+	}
+	switch c.Shutdown {
+	case "":
+		c.Shutdown = ShutdownReboot
+	case ShutdownReboot, ShutdownPowerOff:
+	default:
+		return Config{}, fmt.Errorf("%s: unknown shutdown %q", path, c.Shutdown)
 	}
 	return c, nil
 }

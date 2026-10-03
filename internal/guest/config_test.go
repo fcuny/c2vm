@@ -36,19 +36,44 @@ func TestFromImageNoCommand(t *testing.T) {
 }
 
 func TestConfigRoundTrip(t *testing.T) {
-	root := t.TempDir()
-	want := Config{Args: []string{"sh", "-c", "echo 'hi'"}, Env: []string{"A=b c"}, WorkingDir: "/w", User: "1000:1000"}
-	if err := want.Write(root); err != nil {
+	want := Config{Args: []string{"sh", "-c", "echo 'hi'"}, Env: []string{"A=b c"}, WorkingDir: "/w", User: "1000:1000", Shutdown: ShutdownPowerOff}
+	got := roundTrip(t, want)
+	if !slices.Equal(got.Args, want.Args) || !slices.Equal(got.Env, want.Env) || got.WorkingDir != want.WorkingDir || got.User != want.User || got.Shutdown != want.Shutdown {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestConfigShutdownDefault(t *testing.T) {
+	if got := roundTrip(t, Config{Args: []string{"true"}}); got.Shutdown != ShutdownReboot {
+		t.Errorf("shutdown = %q, want %q", got.Shutdown, ShutdownReboot)
+	}
+}
+
+func TestConfigShutdownInvalid(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"args": ["true"], "shutdown": "halt"}`), 0644); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := ReadConfig(path); err == nil {
+		t.Error("expected an error for an unknown shutdown")
+	}
+}
 
-	got, err := ReadConfig(filepath.Join(root, ConfigPath))
+func roundTrip(t *testing.T, c Config) Config {
+	t.Helper()
+	data, err := c.Marshal()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(got.Args, want.Args) || !slices.Equal(got.Env, want.Env) || got.WorkingDir != want.WorkingDir || got.User != want.User {
-		t.Errorf("got %+v, want %+v", got, want)
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatal(err)
 	}
+	got, err := ReadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
 }
 
 func TestEnviron(t *testing.T) {

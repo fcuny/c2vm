@@ -9,21 +9,24 @@ func TestFirecrackerConfig(t *testing.T) {
 	cfg := Config{
 		SocketPath: "/run/c2vm/fc.sock",
 		Kernel:     "/boot/vmlinux",
-		Init:       "/sbin/init",
-		RootDrive:  "/var/lib/c2vm/rootfs.img",
+		Initrd:     "/var/lib/c2vm/initrd.cpio",
+		Image:      "/var/lib/c2vm/rootfs.img",
 		CPUs:       2,
 		MemoryMiB:  1024,
 		CNINetwork: "c2vm",
 	}.firecrackerConfig()
 
-	if !strings.Contains(cfg.KernelArgs, " init=/sbin/init ") {
-		t.Errorf("kernel args don't set init: %q", cfg.KernelArgs)
+	if strings.Contains(cfg.KernelArgs, "init=") {
+		t.Errorf("kernel args override init, the initramfs' should run: %q", cfg.KernelArgs)
+	}
+	if cfg.InitrdPath != "/var/lib/c2vm/initrd.cpio" {
+		t.Errorf("initrd is %q", cfg.InitrdPath)
 	}
 	if got := *cfg.Drives[0].PathOnHost; got != "/var/lib/c2vm/rootfs.img" {
-		t.Errorf("root drive is %q", got)
+		t.Errorf("image drive is %q", got)
 	}
-	if !*cfg.Drives[0].IsRootDevice {
-		t.Error("drive is not the root device")
+	if *cfg.Drives[0].IsRootDevice || !*cfg.Drives[0].IsReadOnly {
+		t.Error("the image should be a read-only data drive: init mounts it")
 	}
 	if got := *cfg.MachineCfg.VcpuCount; got != 2 {
 		t.Errorf("vcpus = %d, want 2", got)

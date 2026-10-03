@@ -1,4 +1,4 @@
-package rootfs
+package guest
 
 import (
 	"os"
@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestWriteExtraFiles(t *testing.T) {
+func TestSetupEtc(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		setup func(t *testing.T, dir string)
@@ -25,7 +25,7 @@ func TestWriteExtraFiles(t *testing.T) {
 			dir := t.TempDir()
 			tc.setup(t, dir)
 
-			if err := WriteExtraFiles(dir); err != nil {
+			if err := SetupEtc(dir); err != nil {
 				t.Fatal(err)
 			}
 

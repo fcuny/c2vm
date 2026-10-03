@@ -19,11 +19,11 @@ type Config struct {
 	SocketPath string
 	// Kernel is the path to an uncompressed linux kernel (vmlinux).
 	Kernel string
-	// Init is the path, inside the root drive, of the program the kernel
-	// runs as PID 1.
-	Init string
-	// RootDrive is the path to the ext4 image used as the root drive.
-	RootDrive string
+	// Initrd is the path to the initramfs, which runs init.
+	Initrd string
+	// Image is the path to the ext4 image of the container's
+	// filesystem. The VM sees it as /dev/vda and can't modify it.
+	Image string
 	// MetricsFifo, if set, is a FIFO firecracker writes its metrics to.
 	MetricsFifo string
 	// CPUs is the number of vCPUs.
@@ -39,13 +39,14 @@ func (c Config) firecrackerConfig() firecracker.Config {
 		LogLevel:        "debug",
 		SocketPath:      c.SocketPath,
 		KernelImagePath: c.Kernel,
-		KernelArgs:      "console=ttyS0 reboot=k panic=1 acpi=off pci=off i8042.noaux i8042.nomux i8042.nopnp i8042.dumbkbd init=" + c.Init + " random.trust_cpu=on",
+		InitrdPath:      c.Initrd,
+		KernelArgs:      "console=ttyS0 reboot=k panic=1 acpi=off pci=off i8042.noaux i8042.nomux i8042.nopnp i8042.dumbkbd random.trust_cpu=on",
 		Drives: []models.Drive{
 			{
-				DriveID:      firecracker.String("1"),
-				PathOnHost:   firecracker.String(c.RootDrive),
-				IsRootDevice: firecracker.Bool(true),
-				IsReadOnly:   firecracker.Bool(false),
+				DriveID:      firecracker.String("image"),
+				PathOnHost:   firecracker.String(c.Image),
+				IsRootDevice: firecracker.Bool(false),
+				IsReadOnly:   firecracker.Bool(true),
 			},
 		},
 		MetricsFifo: c.MetricsFifo,

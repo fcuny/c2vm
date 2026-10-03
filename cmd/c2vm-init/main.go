@@ -1,8 +1,10 @@
 //go:build linux
 
-// Command c2vm-init is the init process of VMs built by c2vm. It sets
-// up the minimum a container expects, runs the image's command as the
-// image's user, and powers the VM off when the command exits.
+// Command c2vm-init is the init process of VMs built by c2vm. It runs
+// from an initramfs: it mounts the image read-only with a writable
+// layer on top, switches to it, sets up the minimum a container
+// expects, runs the image's command as the image's user, and stops the
+// VM when the command exits.
 package main
 
 import (
@@ -11,29 +13,45 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 
 	"fcuny.net/containerd-to-vm/internal/guest"
 )
 
+// rootDevice is the image: the VM's first, and only, drive.
+const rootDevice = "/dev/vda"
+
 func main() {
-	code, err := run()
+	// Read the configuration before switching to the image: it lives in
+	// the initramfs.
+	config, err := guest.ReadConfig(guest.ConfigPath)
+	if err != nil {
+		logf("%v", err)
+		shutdown(guest.ShutdownReboot)
+	}
+
+	code, err := run(config)
 	if err != nil {
 		logf("%v", err)
 		code = 1
 	}
 	logf("exiting with status %d, shutting down", code)
-	shutdown()
+	shutdown(config.Shutdown)
 }
 
-func run() (int, error) {
+func run(config guest.Config) (int, error) {
+	if err := switchRoot(); err != nil {
+		return 0, err
+	}
+
 	mountFilesystems()
 
-	config, err := guest.ReadConfig(guest.ConfigPath)
-	if err != nil {
-		return 0, err
+	if err := guest.SetupEtc("/"); err != nil {
+		return 0, fmt.Errorf("setting up /etc: %w", err)
 	}
 
 	cred, err := guest.LookupUser("/", config.User)
@@ -109,6 +127,75 @@ func reap(pid int) (int, error) {
 	}
 }
 
+// switchRoot mounts the image read-only, with a tmpfs on top to hold
+// writes, and makes that the root filesystem.
+func switchRoot() error {
+	// With an initramfs, the kernel doesn't mount devtmpfs for us.
+	if err := unix.Mount("devtmpfs", "/dev", "devtmpfs", unix.MS_NOSUID, "mode=0755"); err != nil {
+		return fmt.Errorf("mount /dev: %w", err)
+	}
+
+	if err := waitFor(rootDevice, 5*time.Second); err != nil {
+		return err
+	}
+
+	if err := unix.Mount(rootDevice, guest.LowerDir, "ext4", unix.MS_RDONLY, ""); err != nil {
+		return fmt.Errorf("mount %s: %w", rootDevice, err)
+	}
+	if err := unix.Mount("tmpfs", guest.WritableDir, "tmpfs", 0, "mode=0755"); err != nil {
+		return fmt.Errorf("mount %s: %w", guest.WritableDir, err)
+	}
+
+	upper := filepath.Join(guest.WritableDir, "upper")
+	work := filepath.Join(guest.WritableDir, "work")
+	for _, dir := range []string{upper, work} {
+		if err := os.Mkdir(dir, 0755); err != nil {
+			return err
+		}
+	}
+	opts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", guest.LowerDir, upper, work)
+	if err := unix.Mount("overlay", guest.NewRootDir, "overlay", 0, opts); err != nil {
+		return fmt.Errorf("mount overlay: %w", err)
+	}
+
+	newDev := filepath.Join(guest.NewRootDir, "dev")
+	if err := os.MkdirAll(newDev, 0755); err != nil {
+		return err
+	}
+	if err := unix.Mount("/dev", newDev, "", unix.MS_MOVE, ""); err != nil {
+		return fmt.Errorf("move /dev: %w", err)
+	}
+
+	// The initramfs can't be unmounted or pivoted away from, so move the
+	// new root over it and chroot, as busybox's switch_root does.
+	if err := unix.Chdir(guest.NewRootDir); err != nil {
+		return err
+	}
+	if err := unix.Mount(".", "/", "", unix.MS_MOVE, ""); err != nil {
+		return fmt.Errorf("move the new root: %w", err)
+	}
+	if err := unix.Chroot("."); err != nil {
+		return err
+	}
+	return unix.Chdir("/")
+}
+
+// waitFor waits for a device node to appear, in case its driver probes
+// after init starts.
+func waitFor(path string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		_, err := os.Stat(path)
+		if err == nil {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("waiting for %s: %w", path, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // mountFilesystems mounts what the kernel doesn't. Failures are logged
 // but not fatal, the command may well run without them.
 func mountFilesystems() {
@@ -132,15 +219,19 @@ func mountFilesystems() {
 	}
 }
 
-// shutdown stops the VM. With reboot=k on the kernel command line,
-// firecracker exits when the guest reboots.
-func shutdown() {
+// shutdown stops the VM, by rebooting or powering off the guest
+// depending on what makes the hypervisor stop it.
+func shutdown(how string) {
 	unix.Sync()
-	if err := unix.Reboot(unix.LINUX_REBOOT_CMD_RESTART); err != nil {
-		logf("reboot: %v", err)
+	cmd := unix.LINUX_REBOOT_CMD_RESTART
+	if how == guest.ShutdownPowerOff {
+		cmd = unix.LINUX_REBOOT_CMD_POWER_OFF
 	}
-	// If the reboot failed, returning from PID 1 panics the kernel,
-	// which with panic=1 also stops the VM.
+	if err := unix.Reboot(cmd); err != nil {
+		logf("%s: %v", how, err)
+	}
+	// If that failed, returning from PID 1 panics the kernel, which with
+	// panic=1 also stops the VM.
 	os.Exit(1)
 }
 

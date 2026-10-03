@@ -6,7 +6,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -15,11 +14,11 @@ import (
 	"github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/platforms"
-	"github.com/google/renameio/v2"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"fcuny.net/containerd-to-vm/internal/guest"
 	"fcuny.net/containerd-to-vm/internal/image"
+	"fcuny.net/containerd-to-vm/internal/initramfs"
 	"fcuny.net/containerd-to-vm/internal/rootfs"
 	"fcuny.net/containerd-to-vm/internal/vm"
 )
@@ -133,7 +132,7 @@ func run(opts options) error {
 		return err
 	}
 
-	if err := buildRootfs(ctx, img, opts.outFile, opts.size, initBinary); err != nil {
+	if err := buildRootfs(ctx, img, opts.outFile, opts.size); err != nil {
 		return err
 	}
 
@@ -141,22 +140,37 @@ func run(opts options) error {
 		return fmt.Errorf("failed to resize the image %s: %w", opts.outFile, err)
 	}
 
+	imageConfig, err := img.Config(ctx)
+	if err != nil {
+		return err
+	}
+	config, err := guest.FromImage(imageConfig)
+	if err != nil {
+		return err
+	}
+
+	runDir, err := os.MkdirTemp("", "c2vm")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(runDir)
+
+	initrd := filepath.Join(runDir, "initrd.cpio")
+	if err := writeInitramfs(initrd, initBinary, config); err != nil {
+		return fmt.Errorf("failed to build the initramfs: %w", err)
+	}
+
 	socketPath := opts.socketPath
 	if socketPath == "" {
-		dir, err := os.MkdirTemp("", "c2vm-firecracker")
-		if err != nil {
-			return err
-		}
-		defer os.RemoveAll(dir)
-		socketPath = filepath.Join(dir, "firecracker.sock")
+		socketPath = filepath.Join(runDir, "firecracker.sock")
 	}
 
 	return vm.Run(ctx, vm.Config{
 		FirecrackerBinary: opts.firecrackerBinary,
 		SocketPath:        socketPath,
 		Kernel:            opts.kernel,
-		Init:              guest.InitPath,
-		RootDrive:         opts.outFile,
+		Initrd:            initrd,
+		Image:             opts.outFile,
 		MetricsFifo:       opts.metricsFifo,
 		CPUs:              opts.cpus,
 		MemoryMiB:         opts.memoryMiB,
@@ -167,7 +181,7 @@ func run(opts options) error {
 // buildRootfs creates the image at rawFile, mounts it, and populates it
 // with the container's filesystem. The image is always unmounted before
 // returning.
-func buildRootfs(ctx context.Context, img *image.Image, rawFile, size, initBinary string) (err error) {
+func buildRootfs(ctx context.Context, img *image.Image, rawFile, size string) (err error) {
 	if err := rootfs.Create(rawFile, size); err != nil {
 		return err
 	}
@@ -184,14 +198,6 @@ func buildRootfs(ctx context.Context, img *image.Image, rawFile, size, initBinar
 
 	if err := img.Unpack(ctx, mntDir); err != nil {
 		return fmt.Errorf("failed to extract the container: %w", err)
-	}
-
-	if err := installInit(ctx, img, mntDir, initBinary); err != nil {
-		return fmt.Errorf("failed to install init: %w", err)
-	}
-
-	if err := rootfs.WriteExtraFiles(mntDir); err != nil {
-		return fmt.Errorf("failed to add extra files to the image: %w", err)
 	}
 
 	return nil
@@ -218,50 +224,14 @@ func findInit(path string) (string, error) {
 	return path, nil
 }
 
-// installInit copies the init binary into the image mounted at mntDir,
-// along with the configuration it runs the image's command from.
-func installInit(ctx context.Context, img *image.Image, mntDir, initBinary string) error {
-	imageConfig, err := img.Config(ctx)
+func writeInitramfs(path, initBinary string, config guest.Config) error {
+	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
-
-	config, err := guest.FromImage(imageConfig)
-	if err != nil {
+	if err := initramfs.Write(f, initBinary, config); err != nil {
+		f.Close()
 		return err
 	}
-
-	if err := config.Write(mntDir); err != nil {
-		return err
-	}
-
-	if err := copyFile(initBinary, filepath.Join(mntDir, guest.InitPath), 0755); err != nil {
-		return err
-	}
-
-	log.Printf("init installed")
-	return nil
-}
-
-func copyFile(src, dst string, perm os.FileMode) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-		return err
-	}
-
-	f, err := renameio.NewPendingFile(dst, renameio.WithPermissions(perm))
-	if err != nil {
-		return err
-	}
-	defer f.Cleanup()
-
-	if _, err := io.Copy(f, in); err != nil {
-		return err
-	}
-	return f.CloseAtomicallyReplace()
+	return f.Close()
 }
