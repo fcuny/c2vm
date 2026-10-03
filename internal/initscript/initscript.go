@@ -1,4 +1,5 @@
-package main
+// Package initscript generates the shell script the VM runs as init.
+package initscript
 
 import (
 	"errors"
@@ -7,12 +8,12 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-// generateInitScript returns a shell script that runs the image's
+// Generate returns a shell script that runs the image's
 // command the way a container runtime would: with the image's
 // environment, from its working directory, as Entrypoint followed by
 // Cmd. The script is PID 1, so it execs the command rather than
 // running it as a child.
-func generateInitScript(config ocispec.ImageConfig) (string, error) {
+func Generate(config ocispec.ImageConfig) (string, error) {
 	argv := append(append([]string{}, config.Entrypoint...), config.Cmd...)
 	if len(argv) == 0 {
 		return "", errors.New("the image has neither an entrypoint nor a command")

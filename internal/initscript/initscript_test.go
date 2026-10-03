@@ -1,4 +1,4 @@
-package main
+package initscript
 
 import (
 	"os/exec"
@@ -9,8 +9,8 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-func TestGenerateInitScript(t *testing.T) {
-	script, err := generateInitScript(ocispec.ImageConfig{
+func TestGenerate(t *testing.T) {
+	script, err := Generate(ocispec.ImageConfig{
 		Env:        []string{"PATH=/usr/local/bin:/usr/bin:/bin", "GREETING=hello world"},
 		Entrypoint: []string{"/docker-entrypoint.sh"},
 		Cmd:        []string{"nginx", "-g", "daemon off;"},
@@ -31,8 +31,8 @@ func TestGenerateInitScript(t *testing.T) {
 	}
 }
 
-func TestGenerateInitScriptNoCommand(t *testing.T) {
-	if _, err := generateInitScript(ocispec.ImageConfig{}); err == nil {
+func TestGenerateNoCommand(t *testing.T) {
+	if _, err := Generate(ocispec.ImageConfig{}); err == nil {
 		t.Fatal("expected an error for an image without a command")
 	}
 }
@@ -54,14 +54,14 @@ func TestShellQuote(t *testing.T) {
 	}
 }
 
-func TestGenerateInitScriptRuns(t *testing.T) {
+func TestGenerateRuns(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {
 		t.Skip("sh not found")
 	}
 
 	dir := filepath.Join(t.TempDir(), "work dir")
-	script, err := generateInitScript(ocispec.ImageConfig{
+	script, err := Generate(ocispec.ImageConfig{
 		Env:        []string{"GREETING=it's a test"},
 		Cmd:        []string{"sh", "-c", `printf '%s|%s' "$GREETING" "$PWD"`},
 		WorkingDir: dir,
