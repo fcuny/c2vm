@@ -9,7 +9,8 @@ CNI_TAP_PLUGIN?=$(CNI_BIN_ROOT)/tc-redirect-tap
 
 .PHONY: build
 build:
-	@go build -o c2vm cmd/c2vm/main.go
+	@go build -o c2vm ./cmd/c2vm
+	@CGO_ENABLED=0 go build -o c2vm-init ./cmd/c2vm-init
 
 $(FC_BINARY):
 	@mkdir -p hack/firecracker

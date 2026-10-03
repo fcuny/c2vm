@@ -38,9 +38,11 @@ The VM's `/etc/resolv.conf` uses the nameservers from the CNI result, which `hos
 
 ### Firecracker binaries
 
-Running `make all` builds `c2vm`, downloads Firecracker under `hack/firecracker`, installs the CNI configuration and installs `tc-redirect-tap`.
+Running `make all` builds `c2vm` and `c2vm-init`, downloads Firecracker under `hack/firecracker`, installs the CNI configuration and installs `tc-redirect-tap`.
 
 ### Running
+
+`c2vm` installs `c2vm-init` in the image as the VM's init. It runs the image's entrypoint and command as the image's user, from its working directory and with its environment, then shuts the VM down when the command exits. `c2vm` looks for `c2vm-init` next to itself; use `-init` to point elsewhere. It must be built for the same architecture as the image.
 
 ```sh
 sudo ./c2vm \
