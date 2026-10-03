@@ -3,10 +3,13 @@
 package image
 
 import (
+	"archive/tar"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"path"
 
 	"github.com/Microsoft/hcsshim/ext4/tar2ext4"
 	"github.com/google/go-containerregistry/pkg/authn"
@@ -102,4 +105,30 @@ func (i *Image) WriteExt4(w io.ReadWriteSeeker) error {
 		return fmt.Errorf("failed to convert %s to ext4: %w", i.ref, err)
 	}
 	return nil
+}
+
+// ExtractFile copies the file at name in the image's filesystem to w.
+func (i *Image) ExtractFile(name string, w io.Writer) error {
+	rc := mutate.Extract(i.image)
+	defer rc.Close()
+
+	want := path.Clean(path.Join("/", name))
+	tr := tar.NewReader(rc)
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return fmt.Errorf("%s has no %s", i.ref, want)
+		}
+		if err != nil {
+			return err
+		}
+		if path.Clean(path.Join("/", hdr.Name)) != want {
+			continue
+		}
+		if hdr.Typeflag != tar.TypeReg {
+			return fmt.Errorf("%s in %s is not a regular file", want, i.ref)
+		}
+		_, err = io.Copy(w, tr)
+		return err
+	}
 }

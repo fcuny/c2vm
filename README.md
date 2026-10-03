@@ -22,7 +22,7 @@ You'll need a Linux host with KVM, and root to set up the VM's network with CNI.
 
 ### Kernel
 
-You'll need a kernel to boot the VM. A 6.18 kernel, built from the configuration Firecracker uses in its CI, is published for amd64 and arm64 as `ghcr.io/fcuny/c2vm-kernel:6.18`, with the kernel in `/boot/kernel`. To extract it:
+`c2vm boot` pulls a 6.18 kernel, built from the configuration Firecracker uses in its CI, from `ghcr.io/fcuny/c2vm-kernel:6.18` (for amd64 and arm64, with the kernel in `/boot/kernel`), and caches it. `-kernel` takes another image, or a kernel file. To extract the kernel yourself:
 
 ```sh
 crane export ghcr.io/fcuny/c2vm-kernel:6.18 - | tar -x boot/kernel
@@ -48,7 +48,7 @@ The VM's `/etc/resolv.conf` uses the nameservers from the CNI result, which `hos
 
 ### Firecracker binaries
 
-Running `make all` builds `c2vm` and `c2vm-init`, downloads Firecracker under `hack/firecracker`, installs the CNI configuration and installs `tc-redirect-tap`.
+Running `make all` builds `c2vm` and `c2vm-init`, downloads Firecracker under `hack/firecracker`, installs the CNI configuration and installs `tc-redirect-tap`. `c2vm boot` uses the `firecracker` on your `PATH`, or the one `-firecracker-binary` points to.
 
 ### Running
 
@@ -62,7 +62,6 @@ Running `make all` builds `c2vm` and `c2vm-init`, downloads Firecracker under `h
 
 ```sh
 sudo ./c2vm boot \
-  -kernel boot/kernel \
   -firecracker-binary hack/firecracker/release-v1.17.0-x86_64/firecracker-v1.17.0-x86_64 \
   nginx:stable-alpine3.24-perl
 ```

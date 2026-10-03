@@ -42,6 +42,16 @@ func TestParseBoot(t *testing.T) {
 	}
 }
 
+func TestParseBootDefaultKernel(t *testing.T) {
+	opts, err := parseBoot([]string{"alpine"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.kernel != defaultKernel {
+		t.Errorf("kernel = %q, want %q", opts.kernel, defaultKernel)
+	}
+}
+
 func TestParseErrors(t *testing.T) {
 	for _, tc := range []struct {
 		parse func([]string) error
@@ -52,7 +62,6 @@ func TestParseErrors(t *testing.T) {
 		{saveErr, []string{"alpine", "nginx"}, "expected one image"},
 		{saveErr, []string{"-platform", "windows/amd64", "alpine"}, "only linux"},
 		{saveErr, []string{"-platform", "linux/not-an-arch/x/y", "alpine"}, "invalid -platform"},
-		{bootErr, []string{"alpine"}, "a linux kernel is required"},
 		{bootErr, []string{"-kernel", "k", "-cpus", "0", "alpine"}, "-cpus"},
 		{bootErr, []string{"-kernel", "k", "-memory", "0", "alpine"}, "-memory"},
 	} {

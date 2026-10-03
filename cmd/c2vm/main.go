@@ -185,7 +185,7 @@ func parseBoot(args []string) (bootOptions, error) {
 		fs.PrintDefaults()
 	}
 	finish := opts.register(fs)
-	fs.StringVar(&opts.kernel, "kernel", "", "Path to the linux kernel")
+	fs.StringVar(&opts.kernel, "kernel", defaultKernel, "Kernel to boot: a file, or an image with the kernel in "+kernelPath)
 	fs.StringVar(&opts.initBinary, "init", "", "Path to the c2vm-init binary (default: c2vm-init next to c2vm)")
 	fs.Int64Var(&opts.cpus, "cpus", 1, "Number of vCPUs")
 	fs.Int64Var(&opts.memoryMiB, "memory", 512, "Memory for the VM, in MiB")
@@ -197,9 +197,6 @@ func parseBoot(args []string) (bootOptions, error) {
 	}
 	opts.image = image
 
-	if opts.kernel == "" {
-		return bootOptions{}, errors.New("a linux kernel is required")
-	}
 	if opts.cpus < 1 {
 		return bootOptions{}, errors.New("-cpus must be at least 1")
 	}
@@ -226,6 +223,11 @@ func runBoot(args []string) error {
 	}
 
 	ctx := context.Background()
+
+	kernel, err := resolveKernel(ctx, opts.kernel, opts.cacheDir)
+	if err != nil {
+		return err
+	}
 
 	img, imagePath, err := pullImage(ctx, opts.commonOptions)
 	if err != nil {
@@ -254,7 +256,7 @@ func runBoot(args []string) error {
 	}
 
 	return backend.Run(ctx, vm.Spec{
-		Kernel:    opts.kernel,
+		Kernel:    kernel,
 		Initrd:    initrd,
 		Image:     imagePath,
 		CPUs:      opts.cpus,
