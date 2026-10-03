@@ -6,22 +6,21 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
-	"github.com/containerd/containerd"
-	"github.com/containerd/containerd/content"
-	"github.com/containerd/containerd/images"
-	"github.com/containerd/containerd/namespaces"
-	"github.com/containerd/containerd/platforms"
-	"github.com/docker/docker/pkg/archive"
+	"github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/core/content"
+	"github.com/containerd/containerd/v2/core/images"
+	"github.com/containerd/containerd/v2/pkg/namespaces"
+	"github.com/containerd/platforms"
 	"github.com/firecracker-microvm/firecracker-go-sdk"
 	"github.com/firecracker-microvm/firecracker-go-sdk/client/models"
-	"github.com/google/renameio"
+	"github.com/google/renameio/v2"
+	"github.com/moby/go-archive"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
@@ -61,32 +60,32 @@ func main() {
 		log.Fatalf("the path to the firecracker binary is required")
 	}
 
-	client, err := containerd.New(containerdSock)
+	c, err := client.New(containerdSock)
 	if err != nil {
 		log.Fatalf("failed to create a client for containerd: %v", err)
 	}
-	defer client.Close()
+	defer c.Close()
 
 	ctx := namespaces.WithNamespace(context.Background(), defaultNamespace)
-	ctx, done, err := client.WithLease(ctx)
+	ctx, done, err := c.WithLease(ctx)
 	if err != nil {
 		log.Fatalf("failed to get a lease: %v", err)
 	}
 	defer done(ctx)
 
-	image, err := client.Pull(ctx, *containerName, containerd.WithPlatformMatcher(platform))
+	image, err := c.Pull(ctx, *containerName, client.WithPlatformMatcher(platform))
 	if err != nil {
 		log.Fatalf("failed to pull the container %s: %v\n", *containerName, err)
 	}
 
-	imageSize, err := image.Usage(ctx, containerd.WithUsageManifestLimit(1))
+	imageSize, err := image.Usage(ctx, client.WithUsageManifestLimit(1))
 	if err != nil {
 		log.Fatalf("failed to get the size of the image: %v", err)
 	}
 
 	log.Printf("pulled %s (%d bytes)\n", image.Name(), imageSize)
 
-	mntDir, err := ioutil.TempDir("", "c2vm")
+	mntDir, err := os.MkdirTemp("", "c2vm")
 	if err != nil {
 		log.Fatalf("Failed to create mount temp dir: %v\n", err)
 	}
@@ -95,11 +94,11 @@ func main() {
 		log.Fatalf("%v\n", err)
 	}
 
-	if err := extract(ctx, client, image, mntDir); err != nil {
+	if err := extract(ctx, c, image, mntDir); err != nil {
 		log.Fatalf("failed to extract the container: %v\n", err)
 	}
 
-	if err = initScript(ctx, client, image, mntDir); err != nil {
+	if err = initScript(ctx, c, image, mntDir); err != nil {
 		log.Fatalf("failed to create init script: %s\n", err)
 	}
 
@@ -118,15 +117,15 @@ func main() {
 	bootVM(ctx, *outFile, *kernel, *firecrackerBinary, *metricsFifo)
 }
 
-func extract(ctx context.Context, client *containerd.Client, image containerd.Image, mntDir string) error {
-	manifest, err := images.Manifest(ctx, client.ContentStore(), image.Target(), platform)
+func extract(ctx context.Context, c *client.Client, image client.Image, mntDir string) error {
+	manifest, err := images.Manifest(ctx, c.ContentStore(), image.Target(), platform)
 	if err != nil {
 		log.Fatalf("failed to get the manifest: %v\n", err)
 	}
 
 	for _, desc := range manifest.Layers {
 		log.Printf("extracting layer %s\n", desc.Digest.String())
-		layer, err := client.ContentStore().ReaderAt(ctx, desc)
+		layer, err := c.ContentStore().ReaderAt(ctx, desc)
 		if err != nil {
 			return err
 		}
@@ -139,7 +138,7 @@ func extract(ctx context.Context, client *containerd.Client, image containerd.Im
 }
 
 func createLoopDevice(rawFile, mntDir string) error {
-	f, err := renameio.TempFile("", rawFile)
+	f, err := renameio.NewPendingFile(rawFile)
 	if err != nil {
 		return err
 	}
@@ -196,13 +195,13 @@ func extraFiles(mntDir string) error {
 	return nil
 }
 
-func initScript(ctx context.Context, client *containerd.Client, image containerd.Image, mntDir string) error {
-	config, err := images.Config(ctx, client.ContentStore(), image.Target(), platform)
+func initScript(ctx context.Context, c *client.Client, image client.Image, mntDir string) error {
+	config, err := images.Config(ctx, c.ContentStore(), image.Target(), platform)
 	if err != nil {
 		return err
 	}
 
-	configBlob, err := content.ReadBlob(ctx, client.ContentStore(), config)
+	configBlob, err := content.ReadBlob(ctx, c.ContentStore(), config)
 	if err != nil {
 		return err
 	}
@@ -212,7 +211,7 @@ func initScript(ctx context.Context, client *containerd.Client, image containerd
 	initEnvs := imageSpec.Config.Env
 
 	initPath := filepath.Join(mntDir, "init.sh")
-	f, err := renameio.TempFile("", initPath)
+	f, err := renameio.NewPendingFile(initPath)
 	if err != nil {
 		return err
 	}
@@ -235,7 +234,7 @@ func initScript(ctx context.Context, client *containerd.Client, image containerd
 }
 
 func writeToFile(filepath string, content string) error {
-	if err := ioutil.WriteFile(filepath, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(filepath, []byte(content), 0644); err != nil {
 		return fmt.Errorf("writeToFile %s: %v", filepath, err)
 	}
 	return nil
@@ -262,7 +261,7 @@ func bootVM(ctx context.Context, rawImage, kernel, firecrackerBinary, metricsFif
 		MachineCfg: models.MachineConfiguration{
 			VcpuCount:   firecracker.Int64(1),
 			CPUTemplate: models.CPUTemplate("C3"),
-			HtEnabled:   firecracker.Bool(true),
+			Smt:         firecracker.Bool(true),
 			MemSizeMib:  firecracker.Int64(512),
 		},
 		NetworkInterfaces: []firecracker.NetworkInterface{
