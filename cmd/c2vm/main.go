@@ -1,4 +1,4 @@
-// Command c2vm boots a container image as a firecracker microVM.
+// Command c2vm boots a container image as a microVM.
 package main
 
 import (
@@ -21,17 +21,14 @@ import (
 )
 
 type options struct {
-	container         string
-	outFile           string
-	kernel            string
-	firecrackerBinary string
-	initBinary        string
-	metricsFifo       string
-	socketPath        string
-	cniNetwork        string
-	cpus              int64
-	memoryMiB         int64
-	platform          v1.Platform
+	container  string
+	outFile    string
+	kernel     string
+	initBinary string
+	cpus       int64
+	memoryMiB  int64
+	platform   v1.Platform
+	backend    func() (vm.Backend, error)
 }
 
 func parseFlags(args []string) (options, error) {
@@ -44,14 +41,11 @@ func parseFlags(args []string) (options, error) {
 	fs.StringVar(&opts.container, "container", "", "Image to boot (e.g. alpine:3.24, or ghcr.io/owner/image:tag)")
 	fs.StringVar(&opts.outFile, "out", "container.img", "Path to store the image")
 	fs.StringVar(&opts.kernel, "kernel", "", "Path to the linux kernel image")
-	fs.StringVar(&opts.firecrackerBinary, "firecracker-binary", "", "Path to the firecracker binary")
 	fs.StringVar(&opts.initBinary, "init", "", "Path to the c2vm-init binary (default: c2vm-init next to c2vm)")
-	fs.StringVar(&opts.metricsFifo, "metrics-fifo", "", "FIFO to the firecracker metrics")
-	fs.StringVar(&opts.socketPath, "socket", "", "Path for firecracker's API socket (default: in a temporary directory)")
-	fs.StringVar(&opts.cniNetwork, "cni-network", "c2vm", "Name of the CNI network to attach the VM to")
 	fs.Int64Var(&opts.cpus, "cpus", 1, "Number of vCPUs")
 	fs.Int64Var(&opts.memoryMiB, "memory", 512, "Memory for the VM, in MiB")
 	fs.StringVar(&platform, "platform", "linux/"+runtime.GOARCH, "Platform of the image to pull")
+	opts.backend = backendFlags(fs)
 
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
@@ -62,9 +56,6 @@ func parseFlags(args []string) (options, error) {
 	}
 	if opts.kernel == "" {
 		return options{}, errors.New("a linux kernel is required")
-	}
-	if opts.firecrackerBinary == "" {
-		return options{}, errors.New("the path to the firecracker binary is required")
 	}
 	if opts.cpus < 1 {
 		return options{}, errors.New("-cpus must be at least 1")
@@ -100,6 +91,11 @@ func main() {
 }
 
 func run(opts options) error {
+	backend, err := opts.backend()
+	if err != nil {
+		return err
+	}
+
 	initBinary, err := findInit(opts.initBinary)
 	if err != nil {
 		return err
@@ -125,6 +121,7 @@ func run(opts options) error {
 	if err != nil {
 		return err
 	}
+	config.Shutdown = backend.Shutdown()
 
 	runDir, err := os.MkdirTemp("", "c2vm")
 	if err != nil {
@@ -137,21 +134,12 @@ func run(opts options) error {
 		return fmt.Errorf("failed to build the initramfs: %w", err)
 	}
 
-	socketPath := opts.socketPath
-	if socketPath == "" {
-		socketPath = filepath.Join(runDir, "firecracker.sock")
-	}
-
-	return vm.Run(ctx, vm.Config{
-		FirecrackerBinary: opts.firecrackerBinary,
-		SocketPath:        socketPath,
-		Kernel:            opts.kernel,
-		Initrd:            initrd,
-		Image:             opts.outFile,
-		MetricsFifo:       opts.metricsFifo,
-		CPUs:              opts.cpus,
-		MemoryMiB:         opts.memoryMiB,
-		CNINetwork:        opts.cniNetwork,
+	return backend.Run(ctx, vm.Spec{
+		Kernel:    opts.kernel,
+		Initrd:    initrd,
+		Image:     opts.outFile,
+		CPUs:      opts.cpus,
+		MemoryMiB: opts.memoryMiB,
 	})
 }
 

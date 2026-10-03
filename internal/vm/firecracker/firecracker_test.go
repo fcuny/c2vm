@@ -1,20 +1,27 @@
-package vm
+//go:build linux
+
+package firecracker
 
 import (
 	"strings"
 	"testing"
+
+	"fcuny.net/containerd-to-vm/internal/guest"
+	"fcuny.net/containerd-to-vm/internal/vm"
 )
 
 func TestFirecrackerConfig(t *testing.T) {
-	cfg := Config{
-		SocketPath: "/run/c2vm/fc.sock",
-		Kernel:     "/boot/vmlinux",
-		Initrd:     "/var/lib/c2vm/initrd.cpio",
-		Image:      "/var/lib/c2vm/rootfs.img",
-		CPUs:       2,
-		MemoryMiB:  1024,
-		CNINetwork: "c2vm",
-	}.firecrackerConfig()
+	cfg := firecrackerConfig(
+		Config{CNINetwork: "c2vm"},
+		vm.Spec{
+			Kernel:    "/boot/vmlinux",
+			Initrd:    "/var/lib/c2vm/initrd.cpio",
+			Image:     "/var/lib/c2vm/rootfs.img",
+			CPUs:      2,
+			MemoryMiB: 1024,
+		},
+		"/run/c2vm/fc.sock",
+	)
 
 	if strings.Contains(cfg.KernelArgs, "init=") {
 		t.Errorf("kernel args override init, the initramfs' should run: %q", cfg.KernelArgs)
@@ -36,5 +43,11 @@ func TestFirecrackerConfig(t *testing.T) {
 	}
 	if got := cfg.NetworkInterfaces[0].CNIConfiguration.NetworkName; got != "c2vm" {
 		t.Errorf("CNI network = %q, want c2vm", got)
+	}
+}
+
+func TestShutdown(t *testing.T) {
+	if got := New(Config{}).Shutdown(); got != guest.ShutdownReboot {
+		t.Errorf("Shutdown() = %q, want %q", got, guest.ShutdownReboot)
 	}
 }

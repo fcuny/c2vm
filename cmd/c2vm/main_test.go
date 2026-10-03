@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-var required = []string{"-container", "docker.io/library/alpine:latest", "-kernel", "vmlinux", "-firecracker-binary", "firecracker"}
+var required = []string{"-container", "docker.io/library/alpine:latest", "-kernel", "vmlinux"}
 
 func TestParseFlagsDefaults(t *testing.T) {
 	opts, err := parseFlags(required)
@@ -19,9 +19,6 @@ func TestParseFlagsDefaults(t *testing.T) {
 	if opts.cpus != 1 || opts.memoryMiB != 512 {
 		t.Errorf("unexpected defaults: %+v", opts)
 	}
-	if opts.socketPath != "" {
-		t.Errorf("socket path defaults to %q, want a temporary one", opts.socketPath)
-	}
 }
 
 func TestParseFlagsErrors(t *testing.T) {
@@ -29,9 +26,8 @@ func TestParseFlagsErrors(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{"-kernel", "k", "-firecracker-binary", "f"}, "a container is required"},
-		{[]string{"-container", "c", "-firecracker-binary", "f"}, "a linux kernel is required"},
-		{[]string{"-container", "c", "-kernel", "k"}, "firecracker binary is required"},
+		{[]string{"-kernel", "k"}, "a container is required"},
+		{[]string{"-container", "c"}, "a linux kernel is required"},
 		{append([]string{"-cpus", "0"}, required...), "-cpus"},
 		{append([]string{"-memory", "0"}, required...), "-memory"},
 		{append([]string{"-platform", "windows/amd64"}, required...), "only linux"},
