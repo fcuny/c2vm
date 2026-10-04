@@ -16,7 +16,7 @@ import (
 
 // defaultKernel is the image of the kernel VMs boot by default, built by
 // .github/workflows/kernel.yml.
-const defaultKernel = "ghcr.io/fcuny/c2vm-kernel:6.18"
+const defaultKernel = "ghcr.io/fcuny/c2vm-kernel:7.2"
 
 // kernelPath is where kernel images keep the kernel.
 const kernelPath = "/boot/kernel"
