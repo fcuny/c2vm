@@ -24,6 +24,7 @@ type Backend interface {
 	// the VM: guest.ShutdownReboot or guest.ShutdownPowerOff.
 	Shutdown() string
 	// Run boots the VM, with its console attached to the process's
-	// stdio, and waits for it to stop.
-	Run(ctx context.Context, spec Spec) error
+	// stdio, waits for it to stop, and returns the command's exit
+	// status, which init reports before stopping the VM.
+	Run(ctx context.Context, spec Spec) (int, error)
 }

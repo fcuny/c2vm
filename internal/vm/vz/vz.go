@@ -96,6 +96,13 @@ func configuration(spec vm.Spec) (*vz.VirtualMachineConfiguration, error) {
 	}
 	config.SetEntropyDevicesVirtualMachineConfiguration([]*vz.VirtioEntropyDeviceConfiguration{entropy})
 
+	// init reports the command's exit status over vsock.
+	socket, err := vz.NewVirtioSocketDeviceConfiguration()
+	if err != nil {
+		return nil, fmt.Errorf("vsock: %w", err)
+	}
+	config.SetSocketDevicesVirtualMachineConfiguration([]vz.SocketDeviceConfiguration{socket})
+
 	if _, err := config.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid VM configuration: %w", err)
 	}
@@ -103,17 +110,24 @@ func configuration(spec vm.Spec) (*vz.VirtualMachineConfiguration, error) {
 }
 
 // Run boots the VM, with its console attached to the process's stdio,
-// and waits for it to stop. Interrupting c2vm stops the VM: there's
-// nothing to lose, its changes only live in memory.
-func (b *Backend) Run(ctx context.Context, spec vm.Spec) error {
+// waits for it to stop, and returns the command's exit status.
+// Interrupting c2vm stops the VM: there's nothing to lose, its changes
+// only live in memory. The status is then 128 plus the signal's number,
+// as with a shell.
+func (b *Backend) Run(ctx context.Context, spec vm.Spec) (int, error) {
 	config, err := configuration(spec)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	machine, err := vz.NewVirtualMachine(config)
 	if err != nil {
-		return err
+		return 0, err
+	}
+
+	statuses, err := listenStatus(machine)
+	if err != nil {
+		return 0, err
 	}
 
 	signals := make(chan os.Signal, 1)
@@ -121,9 +135,10 @@ func (b *Backend) Run(ctx context.Context, spec vm.Spec) error {
 	defer signal.Stop(signals)
 
 	if err := machine.Start(); err != nil {
-		return fmt.Errorf("failed to start the vm: %w", err)
+		return 0, fmt.Errorf("failed to start the vm: %w", err)
 	}
 
+	var interrupted syscall.Signal
 	states := machine.StateChangedNotify()
 	for {
 		select {
@@ -131,20 +146,63 @@ func (b *Backend) Run(ctx context.Context, spec vm.Spec) error {
 			switch state {
 			case vz.VirtualMachineStateStopped:
 				log.Print("vm stopped")
-				return nil
+				// init waits for the status to be read before it stops
+				// the VM, so it's there if it was sent.
+				select {
+				case code := <-statuses:
+					return code, nil
+				default:
+				}
+				if interrupted != 0 {
+					return 128 + int(interrupted), nil
+				}
+				return 0, errors.New("the vm stopped without reporting the command's exit status")
 			case vz.VirtualMachineStateError:
-				return errors.New("the vm stopped with an error")
+				return 0, errors.New("the vm stopped with an error")
 			}
-		case <-signals:
+		case sig := <-signals:
 			log.Print("stopping the vm")
+			interrupted = sig.(syscall.Signal)
 			if err := machine.Stop(); err != nil {
-				return fmt.Errorf("failed to stop the vm: %w", err)
+				return 0, fmt.Errorf("failed to stop the vm: %w", err)
 			}
 		case <-ctx.Done():
 			if err := machine.Stop(); err != nil {
-				return fmt.Errorf("failed to stop the vm: %w", err)
+				return 0, fmt.Errorf("failed to stop the vm: %w", err)
 			}
-			return ctx.Err()
+			return 0, ctx.Err()
 		}
 	}
+}
+
+// listenStatus listens for init to report the command's exit status,
+// and sends it on the returned channel.
+func listenStatus(machine *vz.VirtualMachine) (<-chan int, error) {
+	devices := machine.SocketDevices()
+	if len(devices) != 1 {
+		return nil, fmt.Errorf("expected one vsock device, got %d", len(devices))
+	}
+	listener, err := devices[0].Listen(guest.StatusPort)
+	if err != nil {
+		return nil, fmt.Errorf("vsock: %w", err)
+	}
+
+	statuses := make(chan int, 1)
+	go func() {
+		defer listener.Close()
+		conn, err := listener.Accept()
+		if err != nil {
+			log.Printf("waiting for the exit status: %v", err)
+			return
+		}
+		// Closing the connection tells init the status was read.
+		defer conn.Close()
+		code, err := guest.ReadStatus(conn)
+		if err != nil {
+			log.Print(err)
+			return
+		}
+		statuses <- code
+	}()
+	return statuses, nil
 }
