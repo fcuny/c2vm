@@ -4,7 +4,8 @@
 // from an initramfs: it mounts the image read-only with a writable
 // layer on top, switches to it, sets up the minimum a container
 // expects, runs the image's command as the image's user, and stops the
-// VM when the command exits.
+// VM when the command exits, after reporting its exit status to the
+// host.
 package main
 
 import (
@@ -41,7 +42,38 @@ func main() {
 		code = 1
 	}
 	logf("exiting with status %d, shutting down", code)
+	if err := reportStatus(code); err != nil {
+		logf("reporting the exit status: %v", err)
+	}
 	shutdown(config.Shutdown)
+}
+
+// reportStatus sends the command's exit status to the host over vsock.
+// It then waits, briefly, for the host to close the connection, so the
+// status is read before the VM stops.
+func reportStatus(code int) error {
+	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(fd)
+
+	if err := unix.Connect(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_HOST, Port: guest.StatusPort}); err != nil {
+		return fmt.Errorf("connect: %w", err)
+	}
+	if _, err := unix.Write(fd, guest.EncodeStatus(code)); err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
+
+	timeout := unix.NsecToTimeval(time.Second.Nanoseconds())
+	if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &timeout); err != nil {
+		return err
+	}
+	var buf [1]byte
+	if _, err := unix.Read(fd, buf[:]); err != nil {
+		return fmt.Errorf("waiting for the host: %w", err)
+	}
+	return nil
 }
 
 func run(config guest.Config) (int, error) {

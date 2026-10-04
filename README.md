@@ -25,6 +25,8 @@ A command after `--` replaces the image's command, as with `docker run`; it's pa
 ./c2vm boot alpine -- uname -a
 ```
 
+`c2vm boot` exits with the command's exit status, which `c2vm-init` sends to the host over vsock before stopping the VM.
+
 `-e KEY=value` adds a variable to the image's environment, or replaces it; `-e KEY` copies it from your shell:
 
 ```sh

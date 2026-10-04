@@ -61,10 +61,20 @@ func main() {
 	if errors.Is(err, flag.ErrHelp) {
 		return
 	}
+	var exit exitError
+	if errors.As(err, &exit) {
+		os.Exit(int(exit))
+	}
 	if err != nil {
 		log.Fatal(err)
 	}
 }
+
+// exitError is the non-zero exit status of the command run in a VM,
+// which c2vm exits with.
+type exitError int
+
+func (e exitError) Error() string { return fmt.Sprintf("exit status %d", int(e)) }
 
 // commonOptions are the options of every command that pulls an image.
 type commonOptions struct {
@@ -307,13 +317,20 @@ func runBoot(args []string) error {
 		return fmt.Errorf("failed to build the initramfs: %w", err)
 	}
 
-	return backend.Run(ctx, vm.Spec{
+	code, err := backend.Run(ctx, vm.Spec{
 		Kernel:    kernel,
 		Initrd:    initrd,
 		Image:     imagePath,
 		CPUs:      opts.cpus,
 		MemoryMiB: opts.memoryMiB,
 	})
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		return exitError(code)
+	}
+	return nil
 }
 
 // pullImage resolves the image and returns it with the path of its ext4
