@@ -28,10 +28,6 @@ podman rm c2vm-kernel
 # On macOS (needs `brew install vfkit e2fsprogs`):
 kernel/test/make-rootfs.sh aarch64 rootfs.ext4
 kernel/test/boot-vz.sh boot/kernel rootfs.ext4
-
-# On Linux, with access to /dev/kvm:
-kernel/test/make-rootfs.sh x86_64 rootfs.ext4
-kernel/test/boot-firecracker.sh hack/firecracker/release-v1.17.0-x86_64/firecracker-v1.17.0-x86_64 boot/kernel rootfs.ext4
 ```
 
 Each prints `PASS`, or the VM's full output if the test init didn't run.

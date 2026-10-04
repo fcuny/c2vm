@@ -1,4 +1,4 @@
-//go:build !linux && !darwin
+//go:build !darwin
 
 package main
 
@@ -11,10 +11,10 @@ import (
 )
 
 // backendFlags registers the backend's flags, and returns a function
-// that creates the backend once they're parsed. There's no backend for
-// this platform yet.
+// that creates the backend once they're parsed. VMs only boot on macOS,
+// with Virtualization.framework.
 func backendFlags(fs *flag.FlagSet) func() (vm.Backend, error) {
 	return func() (vm.Backend, error) {
-		return nil, fmt.Errorf("booting VMs isn't supported on %s yet", runtime.GOOS)
+		return nil, fmt.Errorf("booting VMs is only supported on macOS, not %s", runtime.GOOS)
 	}
 }

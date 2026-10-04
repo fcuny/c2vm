@@ -30,8 +30,8 @@ const (
 
 // How init stops the VM once the command exits.
 const (
-	// ShutdownReboot reboots the guest. Firecracker exits when the guest
-	// reboots.
+	// ShutdownReboot reboots the guest, for hypervisors that stop the VM
+	// when it does.
 	ShutdownReboot = "reboot"
 	// ShutdownPowerOff powers the guest off. Virtualization.framework
 	// restarts a guest that reboots, and only stops one that powers off.

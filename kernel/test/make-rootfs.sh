@@ -45,8 +45,8 @@ for d in /sys/bus/virtio/devices/*; do
 	echo "boot-test: virtio device $(cat "$d/device") ($(basename "$(readlink "$d/driver")" 2>/dev/null))"
 done
 echo "boot-test: OK"
-# Firecracker stops the VM when the guest reboots, Virtualization.framework
-# when it powers off (on reboot, it restarts it). The boot script says which.
+# Virtualization.framework stops the VM when the guest powers off (on
+# reboot, it restarts it). boot-vz.sh asks for that on the command line.
 case " $(cat /proc/cmdline) " in
 *" boottest.halt=poweroff "*) poweroff -f ;;
 *) reboot -f ;;

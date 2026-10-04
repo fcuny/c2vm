@@ -17,9 +17,9 @@ func SetupEtc(root string) error {
 		return err
 	}
 
-	// The firecracker SDK passes the nameservers from the CNI result to
-	// the kernel's "ip=" boot parameter, and the kernel exposes them in
-	// /proc/net/pnp in resolv.conf format.
+	// The kernel configures the network from its "ip=" parameter, with
+	// DHCP under Virtualization.framework, and exposes the nameservers it
+	// got in /proc/net/pnp in resolv.conf format.
 	resolvConf := filepath.Join(etc, "resolv.conf")
 	if err := os.Remove(resolvConf); err != nil && !os.IsNotExist(err) {
 		return err
