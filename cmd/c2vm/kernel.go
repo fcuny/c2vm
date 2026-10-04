@@ -10,8 +10,8 @@ import (
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 
-	"fcuny.net/containerd-to-vm/internal/cache"
-	"fcuny.net/containerd-to-vm/internal/image"
+	"fcuny.net/c2vm/internal/cache"
+	"fcuny.net/c2vm/internal/image"
 )
 
 // defaultKernel is the image of the kernel VMs boot by default, built by

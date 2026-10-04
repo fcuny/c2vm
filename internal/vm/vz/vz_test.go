@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"fcuny.net/containerd-to-vm/internal/guest"
+	"fcuny.net/c2vm/internal/guest"
 )
 
 func TestShutdown(t *testing.T) {

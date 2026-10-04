@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"runtime"
 
-	"fcuny.net/containerd-to-vm/internal/vm"
+	"fcuny.net/c2vm/internal/vm"
 )
 
 // backendFlags registers the backend's flags, and returns a function

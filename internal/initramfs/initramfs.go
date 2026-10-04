@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	"fcuny.net/containerd-to-vm/internal/guest"
+	"fcuny.net/c2vm/internal/guest"
 )
 
 // Write writes an initramfs to w, with the init binary at initBinary.

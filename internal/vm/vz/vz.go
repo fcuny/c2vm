@@ -14,8 +14,8 @@ import (
 
 	"github.com/Code-Hex/vz/v3"
 
-	"fcuny.net/containerd-to-vm/internal/guest"
-	"fcuny.net/containerd-to-vm/internal/vm"
+	"fcuny.net/c2vm/internal/guest"
+	"fcuny.net/c2vm/internal/vm"
 )
 
 // commandLine is the kernel's command line. The console is the virtio

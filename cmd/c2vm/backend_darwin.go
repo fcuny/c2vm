@@ -5,8 +5,8 @@ package main
 import (
 	"flag"
 
-	"fcuny.net/containerd-to-vm/internal/vm"
-	"fcuny.net/containerd-to-vm/internal/vm/vz"
+	"fcuny.net/c2vm/internal/vm"
+	"fcuny.net/c2vm/internal/vm/vz"
 )
 
 // backendFlags registers the backend's flags, and returns a function

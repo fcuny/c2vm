@@ -19,11 +19,11 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/renameio/v2"
 
-	"fcuny.net/containerd-to-vm/internal/cache"
-	"fcuny.net/containerd-to-vm/internal/guest"
-	"fcuny.net/containerd-to-vm/internal/image"
-	"fcuny.net/containerd-to-vm/internal/initramfs"
-	"fcuny.net/containerd-to-vm/internal/vm"
+	"fcuny.net/c2vm/internal/cache"
+	"fcuny.net/c2vm/internal/guest"
+	"fcuny.net/c2vm/internal/image"
+	"fcuny.net/c2vm/internal/initramfs"
+	"fcuny.net/c2vm/internal/vm"
 )
 
 const usage = `usage: c2vm <command> [flags] <image>

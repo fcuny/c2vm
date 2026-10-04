@@ -20,7 +20,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"fcuny.net/containerd-to-vm/internal/guest"
+	"fcuny.net/c2vm/internal/guest"
 )
 
 // rootDevice is the image: the VM's first, and only, drive.

@@ -1,4 +1,4 @@
-module fcuny.net/containerd-to-vm
+module fcuny.net/c2vm
 
 go 1.26.6
 
