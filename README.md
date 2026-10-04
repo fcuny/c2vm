@@ -18,7 +18,18 @@ It has since moved away from containerd: c2vm pulls images straight from registr
 
 ## How
 
-You'll need a Linux host with KVM, and root to set up the VM's network with CNI. You'll also need a few things before you can run it.
+c2vm boots VMs with firecracker on Linux, and with Apple's Virtualization.framework on macOS (Apple silicon).
+
+On macOS, there's nothing to set up: `make build` builds and signs `c2vm`, and builds `c2vm-init`.
+
+```sh
+make build
+./c2vm boot nginx:stable-alpine3.24-perl
+```
+
+The VM gets an address from Virtualization.framework's NAT, which `c2vm-init` prints when it starts (`c2vm-init: eth0: 192.168.64.30/24`); it's reachable from the Mac at that address. Ctrl-C stops it.
+
+On Linux, you'll need a host with KVM, and root to set up the VM's network with CNI. You'll also need a few things before you can run it.
 
 ### Kernel
 
@@ -66,12 +77,13 @@ sudo ./c2vm boot \
   nginx:stable-alpine3.24-perl
 ```
 
-Booting only works on Linux, with firecracker, for now. `save` works on macOS too.
 
 Images are pulled from their registry, with short names resolved as docker does (`nginx` is `docker.io/library/nginx:latest`). Credentials come from your docker or podman login; public images are pulled anonymously when there are none, or when they can't be looked up.
 
 Images are cached in `~/.cache/c2vm` on Linux and `~/Library/Caches/c2vm` on macOS (`-cache-dir` to change it), so booting an image again only checks which digest its tag points to. The cached image is a read-only ext4 filesystem. At boot, `c2vm-init` runs from an initramfs: it mounts the image with a writable in-memory layer on top, and runs the image's entrypoint and command as the image's user, from its working directory and with its environment. Changes are lost when the VM stops.
 
-`c2vm` looks for `c2vm-init` next to itself; use `-init` to point elsewhere. It must be built for the same architecture as the image.
+`c2vm` looks for `c2vm-init` next to itself; use `-init` to point elsewhere. It's a static Linux binary, for the host's architecture: `make build` builds it as such on macOS too.
+
+On macOS, Virtualization.framework only lets binaries signed with the `com.apple.security.virtualization` entitlement create VMs. `make build` signs `c2vm` with an ad-hoc signature, which is enough to run it locally; a binary built with `go build` alone fails to boot VMs.
 
 Run `./c2vm <command> -h` for the other options: the VM's CPUs and memory, the image's platform, the firecracker socket, and the CNI network.
