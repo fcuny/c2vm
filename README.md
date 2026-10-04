@@ -19,6 +19,12 @@ make build
 
 The VM gets an address from Virtualization.framework's NAT, which `c2vm-init` prints when it starts (`c2vm-init: eth0: 192.168.64.30/24`); it's reachable from the Mac at that address. Ctrl-C stops it.
 
+A command after `--` replaces the image's command, as with `docker run`; it's passed to the image's entrypoint, if it has one:
+
+```sh
+./c2vm boot alpine -- uname -a
+```
+
 `c2vm save` only pulls an image and converts it, and prints the path of the result:
 
 ```sh

@@ -1,7 +1,7 @@
 // Command c2vm boots container images as microVMs.
 //
 //	c2vm save [flags] <image>
-//	c2vm boot [flags] <image>
+//	c2vm boot [flags] <image> [-- command [args...]]
 package main
 
 import (
@@ -124,6 +124,17 @@ func parse(fs *flag.FlagSet, args []string) (string, error) {
 	}
 }
 
+// splitCommand splits args at the first --, into c2vm's flags and image,
+// and the command to run in the VM.
+func splitCommand(args []string) (before, command []string, found bool) {
+	for i, arg := range args {
+		if arg == "--" {
+			return args[:i], args[i+1:], true
+		}
+	}
+	return args, nil, false
+}
+
 type saveOptions struct {
 	commonOptions
 	out string
@@ -175,13 +186,15 @@ type bootOptions struct {
 	cpus       int64
 	memoryMiB  int64
 	backend    func() (vm.Backend, error)
+	// command replaces the image's command when set.
+	command []string
 }
 
 func parseBoot(args []string) (bootOptions, error) {
 	var opts bootOptions
 	fs := flag.NewFlagSet("c2vm boot", flag.ContinueOnError)
 	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), "usage: c2vm boot [flags] <image>\n\nBoots an image as a VM, with its console on the terminal.\n\nFlags:\n")
+		fmt.Fprint(fs.Output(), "usage: c2vm boot [flags] <image> [-- command [args...]]\n\nBoots an image as a VM, with its console on the terminal. A command after -- replaces the image's command, and is passed to its entrypoint, if it has one.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	finish := opts.register(fs)
@@ -190,6 +203,12 @@ func parseBoot(args []string) (bootOptions, error) {
 	fs.Int64Var(&opts.cpus, "cpus", 1, "Number of vCPUs")
 	fs.Int64Var(&opts.memoryMiB, "memory", 512, "Memory for the VM, in MiB")
 	opts.backend = backendFlags(fs)
+
+	args, command, hasCommand := splitCommand(args)
+	if hasCommand && len(command) == 0 {
+		return bootOptions{}, errors.New("expected a command after --")
+	}
+	opts.command = command
 
 	image, err := parse(fs, args)
 	if err != nil {
@@ -237,6 +256,11 @@ func runBoot(args []string) error {
 	imageConfig, err := img.Config()
 	if err != nil {
 		return err
+	}
+	// As with docker run, the command replaces the image's command, but
+	// not its entrypoint.
+	if opts.command != nil {
+		imageConfig.Cmd = opts.command
 	}
 	config, err := guest.FromImage(imageConfig)
 	if err != nil {

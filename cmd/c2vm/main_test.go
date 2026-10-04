@@ -42,6 +42,28 @@ func TestParseBoot(t *testing.T) {
 	}
 }
 
+func TestParseBootCommand(t *testing.T) {
+	// Everything after -- is the command, flags included.
+	opts, err := parseBoot([]string{"-cpus", "2", "alpine", "--", "ls", "-l", "--", "/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.image != "alpine" || opts.cpus != 2 {
+		t.Errorf("unexpected options: %+v", opts)
+	}
+	if got, want := strings.Join(opts.command, " "), "ls -l -- /"; got != want {
+		t.Errorf("command = %q, want %q", got, want)
+	}
+
+	opts, err = parseBoot([]string{"alpine"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.command != nil {
+		t.Errorf("command = %q, want none", opts.command)
+	}
+}
+
 func TestParseBootDefaultKernel(t *testing.T) {
 	opts, err := parseBoot([]string{"alpine"})
 	if err != nil {
@@ -64,6 +86,9 @@ func TestParseErrors(t *testing.T) {
 		{saveErr, []string{"-platform", "linux/not-an-arch/x/y", "alpine"}, "invalid -platform"},
 		{bootErr, []string{"-kernel", "k", "-cpus", "0", "alpine"}, "-cpus"},
 		{bootErr, []string{"-kernel", "k", "-memory", "0", "alpine"}, "-memory"},
+		{bootErr, []string{"alpine", "--"}, "expected a command"},
+		{bootErr, []string{"--", "echo", "hi"}, "an image is required"},
+		{bootErr, []string{"alpine", "nginx", "--", "echo"}, "expected one image"},
 	} {
 		err := tc.parse(tc.args)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
