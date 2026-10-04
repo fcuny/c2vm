@@ -10,6 +10,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -50,6 +51,7 @@ func run(config guest.Config) (int, error) {
 
 	mountFilesystems()
 	linkDevices()
+	logAddresses()
 
 	if err := guest.SetupEtc("/"); err != nil {
 		return 0, fmt.Errorf("setting up /etc: %w", err)
@@ -240,6 +242,29 @@ func linkDevices() {
 		}
 		if err := os.Symlink(target, link); err != nil {
 			logf("symlink %s: %v", link, err)
+		}
+	}
+}
+
+// logAddresses reports the VM's addresses, to know where to reach it.
+func logAddresses() {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		logf("listing network interfaces: %v", err)
+		return
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			if ip, ok := addr.(*net.IPNet); ok && ip.IP.To4() != nil {
+				logf("%s: %s", iface.Name, ip)
+			}
 		}
 	}
 }
