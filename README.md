@@ -2,19 +2,11 @@
 
 ## What
 
-A recent [article](https://fly.io/blog/docker-without-docker/) from the team at [fly.io](https://fly.io) described how they build VMs for firecracker from the docker image provided by their customers. They outline the following steps:
+c2vm boots container images as lightweight VMs.
 
-1. Pull the matching container from the registry.
-2. Create a loop device to store the container's filesystem on.
-3. Unpack the container (in this case, using Docker's Go libraries) into the mounted loop device.
-4. Create a second block device and inject our init, kernel, configuration, and other goop into.
-5. Track down any persistent volumes attached to the application, unlock them with LUKS, and collect their unlocked block devices.
-6. Create a TAP device, configure it for our network, and attach BPF code to it.
-7. Hand all this stuff off to Firecracker and tell it to boot .
+It started as a way to understand how [fly.io](https://fly.io) runs its customers' container images as Firecracker VMs, as described in [Docker without Docker](https://fly.io/blog/docker-without-docker/). The pieces are the same: pull the image from its registry, turn its filesystem into a disk image, add a kernel and an init, and hand it all to a hypervisor.
 
-As I've been interested in playing with both containerd's API and firecracker, I thought it would be a good opportunity to try to implement this.
-
-It has since moved away from both: c2vm pulls images straight from registries, without containerd, and boots them on macOS with Apple's Virtualization.framework.
+It used to do that with containerd and Firecracker, on Linux. As I work on a macOS workstation, it now pulls images straight from their registry and boots them with Apple's Virtualization.framework.
 
 ## How
 
