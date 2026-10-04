@@ -25,6 +25,12 @@ A command after `--` replaces the image's command, as with `docker run`; it's pa
 ./c2vm boot alpine -- uname -a
 ```
 
+`-e KEY=value` adds a variable to the image's environment, or replaces it; `-e KEY` copies it from your shell:
+
+```sh
+./c2vm boot -e GREETING=hello alpine -- sh -c 'echo $GREETING'
+```
+
 `c2vm save` only pulls an image and converts it, and prints the path of the result:
 
 ```sh

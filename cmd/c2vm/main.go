@@ -188,6 +188,31 @@ type bootOptions struct {
 	backend    func() (vm.Backend, error)
 	// command replaces the image's command when set.
 	command []string
+	// env is added to the image's environment, as KEY=value pairs.
+	env envFlag
+}
+
+// envFlag is a repeatable flag of environment variables. KEY=value sets
+// KEY; KEY alone copies KEY from c2vm's environment, and is ignored when
+// it isn't set there, as with docker run.
+type envFlag []string
+
+func (e *envFlag) String() string { return strings.Join(*e, ",") }
+
+func (e *envFlag) Set(value string) error {
+	key, _, hasValue := strings.Cut(value, "=")
+	if key == "" {
+		return fmt.Errorf("invalid variable %q: the name is empty", value)
+	}
+	if !hasValue {
+		v, ok := os.LookupEnv(key)
+		if !ok {
+			return nil
+		}
+		value = key + "=" + v
+	}
+	*e = append(*e, value)
+	return nil
 }
 
 func parseBoot(args []string) (bootOptions, error) {
@@ -202,6 +227,7 @@ func parseBoot(args []string) (bootOptions, error) {
 	fs.StringVar(&opts.initBinary, "init", "", "Path to the c2vm-init binary (default: c2vm-init next to c2vm)")
 	fs.Int64Var(&opts.cpus, "cpus", 1, "Number of vCPUs")
 	fs.Int64Var(&opts.memoryMiB, "memory", 512, "Memory for the VM, in MiB")
+	fs.Var(&opts.env, "e", "Set an environment variable, as KEY=value, or KEY to copy it from c2vm's environment (repeatable)")
 	opts.backend = backendFlags(fs)
 
 	args, command, hasCommand := splitCommand(args)
@@ -262,6 +288,8 @@ func runBoot(args []string) error {
 	if opts.command != nil {
 		imageConfig.Cmd = opts.command
 	}
+	// The last value of a variable wins, so these override the image's.
+	imageConfig.Env = append(imageConfig.Env, opts.env...)
 	config, err := guest.FromImage(imageConfig)
 	if err != nil {
 		return err

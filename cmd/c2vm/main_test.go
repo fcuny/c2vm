@@ -64,6 +64,18 @@ func TestParseBootCommand(t *testing.T) {
 	}
 }
 
+func TestParseBootEnv(t *testing.T) {
+	t.Setenv("C2VM_TEST_SET", "from host")
+	opts, err := parseBoot([]string{"-e", "A=1", "alpine", "-e", "B=x=y", "-e", "C2VM_TEST_SET", "-e", "C2VM_TEST_UNSET", "-e", "EMPTY="})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"A=1", "B=x=y", "C2VM_TEST_SET=from host", "EMPTY="}
+	if strings.Join(opts.env, "\n") != strings.Join(want, "\n") {
+		t.Errorf("env = %q, want %q", opts.env, want)
+	}
+}
+
 func TestParseBootDefaultKernel(t *testing.T) {
 	opts, err := parseBoot([]string{"alpine"})
 	if err != nil {
@@ -87,6 +99,7 @@ func TestParseErrors(t *testing.T) {
 		{bootErr, []string{"-kernel", "k", "-cpus", "0", "alpine"}, "-cpus"},
 		{bootErr, []string{"-kernel", "k", "-memory", "0", "alpine"}, "-memory"},
 		{bootErr, []string{"alpine", "--"}, "expected a command"},
+		{bootErr, []string{"-e", "=1", "alpine"}, "the name is empty"},
 		{bootErr, []string{"--", "echo", "hi"}, "an image is required"},
 		{bootErr, []string{"alpine", "nginx", "--", "echo"}, "expected one image"},
 	} {
