@@ -25,6 +25,12 @@ A command after `--` replaces the image's command, as with `docker run`; it's pa
 ./c2vm boot alpine -- uname -a
 ```
 
+`-t` (or `-it`) runs the command interactively, as `docker run -it` does: your terminal goes in raw mode, and the console becomes the command's terminal, with your terminal's size, so Ctrl-C, job control and full-screen programs work. Ctrl-] stops the VM. `TERM` is set to `xterm-256color`, which most terminals are compatible with and most images know; `-e TERM=...` overrides it.
+
+```sh
+./c2vm boot -t alpine -- sh
+```
+
 `c2vm boot` exits with the command's exit status, which `c2vm-init` sends to the host over vsock before stopping the VM.
 
 `-e KEY=value` adds a variable to the image's environment, or replaces it; `-e KEY` copies it from your shell:

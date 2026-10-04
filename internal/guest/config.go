@@ -57,6 +57,13 @@ type Config struct {
 	// Shutdown is how to stop the VM once the command exits:
 	// ShutdownReboot (the default) or ShutdownPowerOff.
 	Shutdown string `json:"shutdown,omitempty"`
+	// TTY makes the console the command's controlling terminal, for
+	// interactive commands.
+	TTY bool `json:"tty,omitempty"`
+	// Rows and Columns are the size of the host's terminal, set on the
+	// console when TTY is set.
+	Rows    uint16 `json:"rows,omitempty"`
+	Columns uint16 `json:"columns,omitempty"`
 }
 
 // FromImage returns the configuration that runs the image the way a

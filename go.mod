@@ -9,6 +9,7 @@ require (
 	github.com/google/renameio/v2 v2.0.2
 	github.com/opencontainers/image-spec v1.1.1
 	golang.org/x/sys v0.48.0
+	golang.org/x/term v0.46.0
 )
 
 require (

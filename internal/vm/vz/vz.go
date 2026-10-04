@@ -41,7 +41,7 @@ func (b *Backend) Shutdown() string {
 	return guest.ShutdownPowerOff
 }
 
-func configuration(spec vm.Spec) (*vz.VirtualMachineConfiguration, error) {
+func configuration(spec vm.Spec, input *os.File) (*vz.VirtualMachineConfiguration, error) {
 	bootLoader, err := vz.NewLinuxBootLoader(spec.Kernel,
 		vz.WithCommandLine(commandLine),
 		vz.WithInitrd(spec.Initrd),
@@ -55,7 +55,7 @@ func configuration(spec vm.Spec) (*vz.VirtualMachineConfiguration, error) {
 		return nil, err
 	}
 
-	console, err := vz.NewFileHandleSerialPortAttachment(os.Stdin, os.Stdout)
+	console, err := vz.NewFileHandleSerialPortAttachment(input, os.Stdout)
 	if err != nil {
 		return nil, fmt.Errorf("console: %w", err)
 	}
@@ -113,9 +113,27 @@ func configuration(spec vm.Spec) (*vz.VirtualMachineConfiguration, error) {
 // waits for it to stop, and returns the command's exit status.
 // Interrupting c2vm stops the VM: there's nothing to lose, its changes
 // only live in memory. The status is then 128 plus the signal's number,
-// as with a shell.
+// as with a shell. With spec.TTY, the terminal is in raw mode, so Ctrl-C
+// goes to the guest; escapeKey stops the VM instead, as SIGINT would.
 func (b *Backend) Run(ctx context.Context, spec vm.Spec) (int, error) {
-	config, err := configuration(spec)
+	input := os.Stdin
+	var escaped <-chan struct{}
+	if spec.TTY {
+		stdin, err := nonblockingInput(os.Stdin)
+		if err != nil {
+			return 0, err
+		}
+		defer stdin.Close()
+		r, esc, err := forwardInput(stdin)
+		if err != nil {
+			return 0, err
+		}
+		// The console reads from r for as long as the VM runs.
+		defer r.Close()
+		input, escaped = r, esc
+	}
+
+	config, err := configuration(spec, input)
 	if err != nil {
 		return 0, err
 	}
@@ -133,6 +151,15 @@ func (b *Backend) Run(ctx context.Context, spec vm.Spec) (int, error) {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
+
+	if spec.TTY {
+		log.Print("press Ctrl-] to stop the vm")
+		t, err := rawTerminal(os.Stdin)
+		if err != nil {
+			return 0, fmt.Errorf("setting the terminal in raw mode: %w", err)
+		}
+		defer t.restore()
+	}
 
 	if err := machine.Start(); err != nil {
 		return 0, fmt.Errorf("failed to start the vm: %w", err)
@@ -163,6 +190,14 @@ func (b *Backend) Run(ctx context.Context, spec vm.Spec) (int, error) {
 		case sig := <-signals:
 			log.Print("stopping the vm")
 			interrupted = sig.(syscall.Signal)
+			if err := machine.Stop(); err != nil {
+				return 0, fmt.Errorf("failed to stop the vm: %w", err)
+			}
+		case <-escaped:
+			// The channel is closed: stop waiting on it.
+			escaped = nil
+			log.Print("stopping the vm")
+			interrupted = syscall.SIGINT
 			if err := machine.Stop(); err != nil {
 				return 0, fmt.Errorf("failed to stop the vm: %w", err)
 			}

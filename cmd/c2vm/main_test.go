@@ -76,6 +76,28 @@ func TestParseBootEnv(t *testing.T) {
 	}
 }
 
+func TestParseBootTTY(t *testing.T) {
+	for _, flag := range []string{"-t", "-it"} {
+		opts, err := parseBoot([]string{flag, "alpine", "--", "sh"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !opts.tty {
+			t.Errorf("%s: tty isn't set", flag)
+		}
+	}
+}
+
+func TestTerminalEnv(t *testing.T) {
+	if got := terminalEnv([]string{"A=1"}); strings.Join(got, " ") != "A=1 TERM="+defaultTerm {
+		t.Errorf("TERM isn't set to the default: %q", got)
+	}
+	// The image's TERM, or -e's, wins.
+	if got := terminalEnv([]string{"TERM=linux"}); strings.Join(got, " ") != "TERM=linux" {
+		t.Errorf("TERM was overridden: %q", got)
+	}
+}
+
 func TestParseBootDefaultKernel(t *testing.T) {
 	opts, err := parseBoot([]string{"alpine"})
 	if err != nil {

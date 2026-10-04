@@ -18,6 +18,7 @@ import (
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/renameio/v2"
+	"golang.org/x/term"
 
 	"fcuny.net/c2vm/internal/cache"
 	"fcuny.net/c2vm/internal/guest"
@@ -200,6 +201,8 @@ type bootOptions struct {
 	command []string
 	// env is added to the image's environment, as KEY=value pairs.
 	env envFlag
+	// tty runs the command interactively, in the terminal.
+	tty bool
 }
 
 // envFlag is a repeatable flag of environment variables. KEY=value sets
@@ -238,6 +241,8 @@ func parseBoot(args []string) (bootOptions, error) {
 	fs.Int64Var(&opts.cpus, "cpus", 1, "Number of vCPUs")
 	fs.Int64Var(&opts.memoryMiB, "memory", 512, "Memory for the VM, in MiB")
 	fs.Var(&opts.env, "e", "Set an environment variable, as KEY=value, or KEY to copy it from c2vm's environment (repeatable)")
+	fs.BoolVar(&opts.tty, "t", false, "Run the command interactively, in the terminal (Ctrl-] stops the VM)")
+	fs.BoolVar(&opts.tty, "it", false, "Same as -t")
 	opts.backend = backendFlags(fs)
 
 	args, command, hasCommand := splitCommand(args)
@@ -300,11 +305,24 @@ func runBoot(args []string) error {
 	}
 	// The last value of a variable wins, so these override the image's.
 	imageConfig.Env = append(imageConfig.Env, opts.env...)
+	if opts.tty {
+		imageConfig.Env = terminalEnv(imageConfig.Env)
+	}
 	config, err := guest.FromImage(imageConfig)
 	if err != nil {
 		return err
 	}
 	config.Shutdown = backend.Shutdown()
+	if opts.tty {
+		stdin := int(os.Stdin.Fd())
+		if !term.IsTerminal(stdin) {
+			return errors.New("-t needs a terminal on stdin")
+		}
+		config.TTY = true
+		if columns, rows, err := term.GetSize(stdin); err == nil {
+			config.Rows, config.Columns = uint16(rows), uint16(columns)
+		}
+	}
 
 	runDir, err := os.MkdirTemp("", "c2vm")
 	if err != nil {
@@ -323,6 +341,7 @@ func runBoot(args []string) error {
 		Image:     imagePath,
 		CPUs:      opts.cpus,
 		MemoryMiB: opts.memoryMiB,
+		TTY:       opts.tty,
 	})
 	if err != nil {
 		return err
@@ -331,6 +350,20 @@ func runBoot(args []string) error {
 		return exitError(code)
 	}
 	return nil
+}
+
+// defaultTerm is the TERM of interactive commands. The host's TERM may
+// well be missing from the image's terminfo database (e.g. Ghostty's
+// xterm-ghostty), while this one is almost always there, and most
+// terminals are compatible with it.
+const defaultTerm = "xterm-256color"
+
+// terminalEnv sets TERM in env, unless it's already set.
+func terminalEnv(env []string) []string {
+	if _, ok := guest.Getenv(env, "TERM"); ok {
+		return env
+	}
+	return append(env, "TERM="+defaultTerm)
 }
 
 // pullImage resolves the image and returns it with the path of its ext4

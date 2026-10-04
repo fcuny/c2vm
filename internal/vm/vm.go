@@ -16,6 +16,9 @@ type Spec struct {
 	CPUs int64
 	// MemoryMiB is the amount of memory, in MiB.
 	MemoryMiB int64
+	// TTY puts the terminal in raw mode, to pass every key to the
+	// guest's console, for interactive commands.
+	TTY bool
 }
 
 // Backend runs VMs with a given hypervisor.

@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -121,6 +122,20 @@ func run(config guest.Config) (int, error) {
 			Groups: cred.Groups,
 		},
 	}
+	if config.TTY {
+		tty, err := openTerminal(config.Rows, config.Columns)
+		if err != nil {
+			return 0, err
+		}
+		defer tty.Close()
+		// The command leads a new session, with the console as its
+		// controlling terminal: the console's line discipline then
+		// turns ^C into SIGINT, ^Z into SIGTSTP, and so on.
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, tty
+		cmd.SysProcAttr.Setsid = true
+		cmd.SysProcAttr.Setctty = true
+		cmd.SysProcAttr.Ctty = 0
+	}
 
 	// Forward the signals we get to the command, as a container runtime
 	// would. Register before starting it so none are missed.
@@ -138,6 +153,33 @@ func run(config guest.Config) (int, error) {
 	}()
 
 	return reap(cmd.Process.Pid)
+}
+
+// openTerminal opens the console's device, and sets its size. The
+// kernel gives init /dev/console, which can't be a controlling terminal,
+// so it opens the terminal behind it, as busybox's cttyhack does.
+func openTerminal(rows, columns uint16) (*os.File, error) {
+	active, err := os.ReadFile("/sys/class/tty/console/active")
+	if err != nil {
+		return nil, fmt.Errorf("finding the console: %w", err)
+	}
+	// The last console listed is /dev/console.
+	names := strings.Fields(string(active))
+	if len(names) == 0 {
+		return nil, errors.New("finding the console: there is none")
+	}
+	tty, err := os.OpenFile("/dev/"+names[len(names)-1], os.O_RDWR|unix.O_NOCTTY, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	if rows > 0 && columns > 0 {
+		size := &unix.Winsize{Row: rows, Col: columns}
+		if err := unix.IoctlSetWinsize(int(tty.Fd()), unix.TIOCSWINSZ, size); err != nil {
+			logf("setting the terminal's size: %v", err)
+		}
+	}
+	return tty, nil
 }
 
 // reap waits for every child, as PID 1 has to so orphans don't stay
