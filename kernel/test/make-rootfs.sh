@@ -3,15 +3,14 @@
 # Builds a minimal Alpine root filesystem whose init prints what the
 # kernel found and reboots, to check that a kernel boots.
 #
-#   kernel/test/make-rootfs.sh <x86_64|aarch64> <output.ext4>
+#   kernel/test/make-rootfs.sh <output.ext4>
 #
 # Doesn't need root: mkfs.ext4 -d populates the filesystem from a
 # directory. On macOS, install e2fsprogs with Homebrew.
 
 set -euo pipefail
 
-arch=${1:?usage: make-rootfs.sh <x86_64|aarch64> <output.ext4>}
-out=${2:?usage: make-rootfs.sh <x86_64|aarch64> <output.ext4>}
+out=${1:?usage: make-rootfs.sh <output.ext4>}
 
 mkfs=mkfs.ext4
 if ! command -v "$mkfs" >/dev/null && command -v brew >/dev/null; then
@@ -21,7 +20,7 @@ fi
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-base=https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/$arch
+base=https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/aarch64
 file=$(curl -fsSL "$base/latest-releases.yaml" | awk '/flavor: alpine-minirootfs/ { found = 1 } found && /file:/ { print $2; exit }')
 sha=$(curl -fsSL "$base/latest-releases.yaml" | awk '/flavor: alpine-minirootfs/ { found = 1 } found && /sha256:/ { print $2; exit }')
 echo "downloading $file"
