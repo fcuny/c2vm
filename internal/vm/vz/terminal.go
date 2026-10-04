@@ -7,10 +7,15 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 
+	"github.com/Code-Hex/vz/v3"
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
+
+	"fcuny.net/c2vm/internal/guest"
 )
 
 // escapeKey stops the VM when the command is interactive, as Ctrl-C
@@ -58,6 +63,46 @@ func (c crlfWriter) Write(p []byte) (int, error) {
 		return 0, err
 	}
 	return len(p), nil
+}
+
+// sendResizes sends the size of the terminal fd to init once it
+// connects, and again whenever it changes, until stop is called.
+func sendResizes(machine *vz.VirtualMachine, fd int) (stop func(), err error) {
+	listener, err := listen(machine, guest.ResizePort)
+	if err != nil {
+		return nil, err
+	}
+
+	winch := make(chan os.Signal, 1)
+	signal.Notify(winch, syscall.SIGWINCH)
+	done := make(chan struct{})
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			// The size can change between the configuration and
+			// init connecting: always start with the current one.
+			if columns, rows, err := term.GetSize(fd); err == nil {
+				if _, err := conn.Write(guest.EncodeSize(uint16(rows), uint16(columns))); err != nil {
+					return
+				}
+			}
+			select {
+			case <-winch:
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	return func() {
+		signal.Stop(winch)
+		close(done)
+		listener.Close()
+	}, nil
 }
 
 // nonblockingInput returns a copy of f that Go reads with its poller.

@@ -53,15 +53,12 @@ func main() {
 // It then waits, briefly, for the host to close the connection, so the
 // status is read before the VM stops.
 func reportStatus(code int) error {
-	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	fd, err := dialHost(guest.StatusPort)
 	if err != nil {
 		return err
 	}
 	defer unix.Close(fd)
 
-	if err := unix.Connect(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_HOST, Port: guest.StatusPort}); err != nil {
-		return fmt.Errorf("connect: %w", err)
-	}
 	if _, err := unix.Write(fd, guest.EncodeStatus(code)); err != nil {
 		return fmt.Errorf("write: %w", err)
 	}
@@ -128,6 +125,7 @@ func run(config guest.Config) (int, error) {
 			return 0, err
 		}
 		defer tty.Close()
+		go followResizes(tty)
 		// The command leads a new session, with the console as its
 		// controlling terminal: the console's line discipline then
 		// turns ^C into SIGINT, ^Z into SIGTSTP, and so on.
@@ -155,6 +153,49 @@ func run(config guest.Config) (int, error) {
 	return reap(cmd.Process.Pid)
 }
 
+// dialHost connects to port on the host, over vsock.
+func dialHost(port uint32) (int, error) {
+	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return -1, err
+	}
+	if err := unix.Connect(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_HOST, Port: port}); err != nil {
+		unix.Close(fd)
+		return -1, fmt.Errorf("connect to the host's port %d: %w", port, err)
+	}
+	return fd, nil
+}
+
+// followResizes sets the terminal's size whenever the host's changes.
+// The kernel then sends SIGWINCH to the command.
+func followResizes(tty *os.File) {
+	fd, err := dialHost(guest.ResizePort)
+	if err != nil {
+		logf("following the terminal's size: %v", err)
+		return
+	}
+	conn := os.NewFile(uintptr(fd), "vsock")
+	defer conn.Close()
+
+	ttyFD := int(tty.Fd())
+	err = guest.ReadSizes(conn, func(rows, columns uint16) {
+		setSize(ttyFD, rows, columns)
+	})
+	if err != nil {
+		logf("following the terminal's size: %v", err)
+	}
+}
+
+func setSize(fd int, rows, columns uint16) {
+	if rows == 0 || columns == 0 {
+		return
+	}
+	size := &unix.Winsize{Row: rows, Col: columns}
+	if err := unix.IoctlSetWinsize(fd, unix.TIOCSWINSZ, size); err != nil {
+		logf("setting the terminal's size: %v", err)
+	}
+}
+
 // openTerminal opens the console's device, and sets its size. The
 // kernel gives init /dev/console, which can't be a controlling terminal,
 // so it opens the terminal behind it, as busybox's cttyhack does.
@@ -173,12 +214,7 @@ func openTerminal(rows, columns uint16) (*os.File, error) {
 		return nil, err
 	}
 
-	if rows > 0 && columns > 0 {
-		size := &unix.Winsize{Row: rows, Col: columns}
-		if err := unix.IoctlSetWinsize(int(tty.Fd()), unix.TIOCSWINSZ, size); err != nil {
-			logf("setting the terminal's size: %v", err)
-		}
-	}
+	setSize(int(tty.Fd()), rows, columns)
 	return tty, nil
 }
 

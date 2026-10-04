@@ -153,6 +153,12 @@ func (b *Backend) Run(ctx context.Context, spec vm.Spec) (int, error) {
 	defer signal.Stop(signals)
 
 	if spec.TTY {
+		stop, err := sendResizes(machine, int(os.Stdin.Fd()))
+		if err != nil {
+			return 0, err
+		}
+		defer stop()
+
 		log.Print("press Ctrl-] to stop the vm")
 		t, err := rawTerminal(os.Stdin)
 		if err != nil {
@@ -210,16 +216,26 @@ func (b *Backend) Run(ctx context.Context, spec vm.Spec) (int, error) {
 	}
 }
 
-// listenStatus listens for init to report the command's exit status,
-// and sends it on the returned channel.
-func listenStatus(machine *vz.VirtualMachine) (<-chan int, error) {
+// listen listens on port of the VM's vsock device, for connections from
+// the guest.
+func listen(machine *vz.VirtualMachine, port uint32) (*vz.VirtioSocketListener, error) {
 	devices := machine.SocketDevices()
 	if len(devices) != 1 {
 		return nil, fmt.Errorf("expected one vsock device, got %d", len(devices))
 	}
-	listener, err := devices[0].Listen(guest.StatusPort)
+	listener, err := devices[0].Listen(port)
 	if err != nil {
-		return nil, fmt.Errorf("vsock: %w", err)
+		return nil, fmt.Errorf("vsock: listening on port %d: %w", port, err)
+	}
+	return listener, nil
+}
+
+// listenStatus listens for init to report the command's exit status,
+// and sends it on the returned channel.
+func listenStatus(machine *vz.VirtualMachine) (<-chan int, error) {
+	listener, err := listen(machine, guest.StatusPort)
+	if err != nil {
+		return nil, err
 	}
 
 	statuses := make(chan int, 1)
