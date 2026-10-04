@@ -7,8 +7,8 @@ on:
   pull_request:
 
 jobs:
-  build:
-    name: Build
+  linux:
+    name: Linux
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
@@ -30,3 +30,30 @@ jobs:
 
       - name: Build
         run: go build -v ./cmd/...
+
+  macos:
+    name: macOS
+    # Apple silicon. GitHub's macOS runners can't run VMs themselves (no
+    # nested virtualization), so this builds and tests c2vm, including
+    # the Virtualization.framework backend, without booting anything.
+    runs-on: macos-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Go vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race -v ./...
+
+      - name: Build and sign
+        run: |
+          make build
+          codesign -d --entitlements - c2vm | grep -q com.apple.security.virtualization
+          file c2vm-init | grep -q 'ELF 64-bit LSB executable, ARM aarch64'

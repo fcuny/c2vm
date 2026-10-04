@@ -7,7 +7,7 @@ The kernel c2vm boots with Apple's Virtualization.framework, for arm64.
 - `configs/c2vm.fragment`: what we add on top.
 - `build.sh`: downloads the release from kernel.org, checks its checksum, applies the configs, and builds it.
 
-The [kernel workflow](../.github/workflows/kernel.yml) builds it on each change and, on `main`, publishes it as `ghcr.io/fcuny/c2vm-kernel:<major.minor>` and `:<version>`. It's cross-compiled on x86_64, as arm64 runners aren't free for private repositories.
+The [kernel workflow](../.github/workflows/kernel.yml) builds it on each change and, on `main`, publishes it as `ghcr.io/fcuny/c2vm-kernel:<major.minor>` and `:<version>`. It's built on an arm64 runner.
 
 The config enables virtio over PCI, which Virtualization.framework uses, and builds everything in: there are no modules to ship.
 
