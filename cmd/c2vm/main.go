@@ -205,6 +205,81 @@ type bootOptions struct {
 	tty bool
 	// stdin passes c2vm's stdin to the command.
 	stdin bool
+	// volumes are the host's directories to mount in the VM.
+	volumes volumeFlag
+}
+
+// volume is a directory of the host, mounted in the VM.
+type volume struct {
+	// source is the directory on the host, as an absolute path.
+	source string
+	// target is where it's mounted in the VM.
+	target   string
+	readOnly bool
+}
+
+// volumeFlag is a repeatable flag of directories to mount, as with
+// docker run -v: source:target, with an optional :ro or :rw. The source
+// is a path on the host, absolute or relative to the current directory
+// with ./ or ../; names alone would be docker's named volumes, which
+// c2vm doesn't have.
+type volumeFlag []volume
+
+func (v *volumeFlag) String() string {
+	var s []string
+	for _, vol := range *v {
+		s = append(s, vol.source+":"+vol.target)
+	}
+	return strings.Join(s, ",")
+}
+
+func (v *volumeFlag) Set(value string) error {
+	parts := strings.Split(value, ":")
+	if len(parts) < 2 || len(parts) > 3 {
+		return fmt.Errorf("invalid volume %q: expected source:target[:ro]", value)
+	}
+	vol := volume{source: parts[0], target: parts[1]}
+	if len(parts) == 3 {
+		switch parts[2] {
+		case "ro":
+			vol.readOnly = true
+		case "rw":
+		default:
+			return fmt.Errorf("invalid volume %q: unknown option %q, expected ro or rw", value, parts[2])
+		}
+	}
+
+	if !filepath.IsAbs(vol.source) && !strings.HasPrefix(vol.source, "./") && !strings.HasPrefix(vol.source, "../") && vol.source != "." && vol.source != ".." {
+		return fmt.Errorf("invalid volume %q: the source must be a path, absolute or starting with ./", value)
+	}
+	source, err := filepath.Abs(vol.source)
+	if err != nil {
+		return err
+	}
+	fi, err := os.Stat(source)
+	if err != nil {
+		return fmt.Errorf("invalid volume %q: %w", value, err)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("invalid volume %q: %s isn't a directory, only directories can be shared", value, source)
+	}
+	vol.source = source
+
+	if !strings.HasPrefix(vol.target, "/") {
+		return fmt.Errorf("invalid volume %q: the target must be an absolute path", value)
+	}
+	vol.target = filepath.Clean(vol.target)
+	if vol.target == "/" {
+		return fmt.Errorf("invalid volume %q: can't mount over /", value)
+	}
+	for _, other := range *v {
+		if other.target == vol.target {
+			return fmt.Errorf("invalid volume %q: %s is already mounted", value, vol.target)
+		}
+	}
+
+	*v = append(*v, vol)
+	return nil
 }
 
 // envFlag is a repeatable flag of environment variables. KEY=value sets
@@ -246,6 +321,7 @@ func parseBoot(args []string) (bootOptions, error) {
 	fs.BoolVar(&opts.tty, "t", false, "Run the command interactively, in the terminal (Ctrl-] stops the VM)")
 	fs.BoolVar(&opts.tty, "it", false, "Same as -t")
 	fs.BoolVar(&opts.stdin, "i", false, "Pass stdin to the command, which otherwise reads /dev/null")
+	fs.Var(&opts.volumes, "v", "Mount a directory of the host, as source:target, with :ro to make it read-only (repeatable)")
 	opts.backend = backendFlags(fs)
 
 	args, command, hasCommand := splitCommand(args)
@@ -329,6 +405,12 @@ func runBoot(args []string) error {
 		}
 	}
 	config.Stdin = opts.stdin
+	var shares []vm.Share
+	for i, vol := range opts.volumes {
+		tag := guest.MountTag(i)
+		shares = append(shares, vm.Share{Path: vol.source, Tag: tag, ReadOnly: vol.readOnly})
+		config.Mounts = append(config.Mounts, guest.Mount{Tag: tag, Target: vol.target, ReadOnly: vol.readOnly})
+	}
 
 	runDir, err := os.MkdirTemp("", "c2vm")
 	if err != nil {
@@ -349,6 +431,7 @@ func runBoot(args []string) error {
 		MemoryMiB: opts.memoryMiB,
 		TTY:       opts.tty,
 		Stdin:     opts.stdin,
+		Shares:    shares,
 	})
 	if err != nil {
 		return err

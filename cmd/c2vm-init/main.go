@@ -80,6 +80,9 @@ func run(config guest.Config) (int, error) {
 	}
 
 	mountFilesystems()
+	if err := mountShares(config.Mounts); err != nil {
+		return 0, err
+	}
 	linkDevices()
 	logAddresses()
 
@@ -350,6 +353,24 @@ func mountFilesystems() {
 			logf("mount %s: %v", m.target, err)
 		}
 	}
+}
+
+// mountShares mounts the host's directories, with virtiofs. Unlike
+// mountFilesystems, a failure is fatal: the command expects them.
+func mountShares(mounts []guest.Mount) error {
+	for _, m := range mounts {
+		if err := os.MkdirAll(m.Target, 0755); err != nil {
+			return fmt.Errorf("mount %s: %w", m.Target, err)
+		}
+		var flags uintptr
+		if m.ReadOnly {
+			flags |= unix.MS_RDONLY
+		}
+		if err := unix.Mount(m.Tag, m.Target, "virtiofs", flags, ""); err != nil {
+			return fmt.Errorf("mount %s: %w", m.Target, err)
+		}
+	}
+	return nil
 }
 
 // linkDevices creates the links container runtimes add to /dev, which

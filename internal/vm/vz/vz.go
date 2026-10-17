@@ -98,6 +98,27 @@ func configuration(spec vm.Spec, input *os.File) (*vz.VirtualMachineConfiguratio
 	}
 	config.SetEntropyDevicesVirtualMachineConfiguration([]*vz.VirtioEntropyDeviceConfiguration{entropy})
 
+	// Each share is its own virtiofs device, which init mounts by its
+	// tag.
+	var shares []vz.DirectorySharingDeviceConfiguration
+	for _, s := range spec.Shares {
+		dir, err := vz.NewSharedDirectory(s.Path, s.ReadOnly)
+		if err != nil {
+			return nil, fmt.Errorf("sharing %s: %w", s.Path, err)
+		}
+		share, err := vz.NewSingleDirectoryShare(dir)
+		if err != nil {
+			return nil, fmt.Errorf("sharing %s: %w", s.Path, err)
+		}
+		fs, err := vz.NewVirtioFileSystemDeviceConfiguration(s.Tag)
+		if err != nil {
+			return nil, fmt.Errorf("sharing %s: %w", s.Path, err)
+		}
+		fs.SetDirectoryShare(share)
+		shares = append(shares, fs)
+	}
+	config.SetDirectorySharingDevicesVirtualMachineConfiguration(shares)
+
 	// init reports the command's exit status over vsock.
 	socket, err := vz.NewVirtioSocketDeviceConfiguration()
 	if err != nil {

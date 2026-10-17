@@ -1,7 +1,10 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -106,6 +109,60 @@ func TestParseBootStdin(t *testing.T) {
 	}
 	if opts.stdin {
 		t.Error("stdin is set without -i")
+	}
+}
+
+func TestParseBootVolumes(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.Mkdir("src", 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	opts, err := parseBoot([]string{"-v", "./src:/src", "-v", dir + ":/data/:ro", "-v", ".:/work:rw", "alpine"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// t.TempDir may be behind a symlink, e.g. /var on macOS: compare
+	// with the path the current directory resolves to.
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []volume{
+		{source: filepath.Join(cwd, "src"), target: "/src"},
+		{source: dir, target: "/data", readOnly: true},
+		{source: cwd, target: "/work"},
+	}
+	if !slices.Equal(opts.volumes, want) {
+		t.Errorf("volumes = %+v, want %+v", opts.volumes, want)
+	}
+}
+
+func TestParseBootVolumeErrors(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.WriteFile("file", nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir("src", 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{
+		{"-v", "./src"},                       // no target
+		{"-v", "./src:/src:rx"},               // unknown option
+		{"-v", "./src:/src:ro:z"},             // too many fields
+		{"-v", "src:/src"},                    // a named volume
+		{"-v", "./missing:/src"},              // doesn't exist
+		{"-v", "./file:/file"},                // not a directory
+		{"-v", "./src:src"},                   // relative target
+		{"-v", "./src:/"},                     // over the root
+		{"-v", "./src:/a", "-v", "./src:/a/"}, // the same target twice
+	} {
+		if _, err := parseBoot(append(args, "alpine")); err == nil {
+			t.Errorf("parseBoot(%q) succeeded, want an error", args)
+		}
 	}
 }
 
