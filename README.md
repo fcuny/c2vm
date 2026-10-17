@@ -31,6 +31,12 @@ A command after `--` replaces the image's command, as with `docker run`; it's pa
 ./c2vm boot -t alpine -- sh
 ```
 
+Without `-t`, the command reads `/dev/null`. `-i` passes your stdin to it instead, as `docker run -i` does, over vsock, so the command reads EOF when your stdin ends:
+
+```sh
+cat run.sh | ./c2vm boot -i fedora -- bash
+```
+
 `c2vm boot` exits with the command's exit status, which `c2vm-init` sends to the host over vsock before stopping the VM.
 
 `-e KEY=value` adds a variable to the image's environment, or replaces it; `-e KEY` copies it from your shell:

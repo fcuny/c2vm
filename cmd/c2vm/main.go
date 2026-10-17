@@ -203,6 +203,8 @@ type bootOptions struct {
 	env envFlag
 	// tty runs the command interactively, in the terminal.
 	tty bool
+	// stdin passes c2vm's stdin to the command.
+	stdin bool
 }
 
 // envFlag is a repeatable flag of environment variables. KEY=value sets
@@ -243,6 +245,7 @@ func parseBoot(args []string) (bootOptions, error) {
 	fs.Var(&opts.env, "e", "Set an environment variable, as KEY=value, or KEY to copy it from c2vm's environment (repeatable)")
 	fs.BoolVar(&opts.tty, "t", false, "Run the command interactively, in the terminal (Ctrl-] stops the VM)")
 	fs.BoolVar(&opts.tty, "it", false, "Same as -t")
+	fs.BoolVar(&opts.stdin, "i", false, "Pass stdin to the command, which otherwise reads /dev/null")
 	opts.backend = backendFlags(fs)
 
 	args, command, hasCommand := splitCommand(args)
@@ -319,10 +322,13 @@ func runBoot(args []string) error {
 			return errors.New("-t needs a terminal on stdin")
 		}
 		config.TTY = true
+		// The command reads the terminal's input from the console.
+		opts.stdin = false
 		if columns, rows, err := term.GetSize(stdin); err == nil {
 			config.Rows, config.Columns = uint16(rows), uint16(columns)
 		}
 	}
+	config.Stdin = opts.stdin
 
 	runDir, err := os.MkdirTemp("", "c2vm")
 	if err != nil {
@@ -342,6 +348,7 @@ func runBoot(args []string) error {
 		CPUs:      opts.cpus,
 		MemoryMiB: opts.memoryMiB,
 		TTY:       opts.tty,
+		Stdin:     opts.stdin,
 	})
 	if err != nil {
 		return err

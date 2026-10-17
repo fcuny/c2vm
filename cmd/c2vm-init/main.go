@@ -111,7 +111,17 @@ func run(config guest.Config) (int, error) {
 	cmd.Args[0] = config.Args[0]
 	cmd.Env = env
 	cmd.Dir = dir
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	// Without a stdin, the command reads /dev/null, as with docker run
+	// without -i.
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if config.Stdin && !config.TTY {
+		stdin, err := openStdin()
+		if err != nil {
+			return 0, err
+		}
+		defer stdin.Close()
+		cmd.Stdin = stdin
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Credential: &syscall.Credential{
 			Uid:    cred.UID,
@@ -164,6 +174,16 @@ func dialHost(port uint32) (int, error) {
 		return -1, fmt.Errorf("connect to the host's port %d: %w", port, err)
 	}
 	return fd, nil
+}
+
+// openStdin connects to the host for the command's stdin, which ends
+// when the host's does.
+func openStdin() (*os.File, error) {
+	fd, err := dialHost(guest.StdinPort)
+	if err != nil {
+		return nil, fmt.Errorf("connecting stdin: %w", err)
+	}
+	return os.NewFile(uintptr(fd), "stdin"), nil
 }
 
 // followResizes sets the terminal's size whenever the host's changes.

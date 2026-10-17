@@ -19,6 +19,9 @@ type Spec struct {
 	// TTY puts the terminal in raw mode, to pass every key to the
 	// guest's console, for interactive commands.
 	TTY bool
+	// Stdin passes the process's stdin to init, for the command to
+	// read, when TTY isn't set.
+	Stdin bool
 }
 
 // Backend runs VMs with a given hypervisor.

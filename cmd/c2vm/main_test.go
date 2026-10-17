@@ -88,6 +88,27 @@ func TestParseBootTTY(t *testing.T) {
 	}
 }
 
+func TestParseBootStdin(t *testing.T) {
+	opts, err := parseBoot([]string{"-i", "fedora", "--", "bash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opts.stdin {
+		t.Error("-i: stdin isn't set")
+	}
+	if opts.tty {
+		t.Error("-i: tty is set")
+	}
+
+	opts, err = parseBoot([]string{"fedora", "--", "bash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.stdin {
+		t.Error("stdin is set without -i")
+	}
+}
+
 func TestTerminalEnv(t *testing.T) {
 	if got := terminalEnv([]string{"A=1"}); strings.Join(got, " ") != "A=1 TERM="+defaultTerm {
 		t.Errorf("TERM isn't set to the default: %q", got)
