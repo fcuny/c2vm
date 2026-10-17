@@ -392,24 +392,15 @@ func runBoot(args []string) error {
 		return err
 	}
 	config.Shutdown = backend.Shutdown()
+	shares := configure(opts, &config)
 	if opts.tty {
 		stdin := int(os.Stdin.Fd())
 		if !term.IsTerminal(stdin) {
 			return errors.New("-t needs a terminal on stdin")
 		}
-		config.TTY = true
-		// The command reads the terminal's input from the console.
-		opts.stdin = false
 		if columns, rows, err := term.GetSize(stdin); err == nil {
 			config.Rows, config.Columns = uint16(rows), uint16(columns)
 		}
-	}
-	config.Stdin = opts.stdin
-	var shares []vm.Share
-	for i, vol := range opts.volumes {
-		tag := guest.MountTag(i)
-		shares = append(shares, vm.Share{Path: vol.source, Tag: tag, ReadOnly: vol.readOnly})
-		config.Mounts = append(config.Mounts, guest.Mount{Tag: tag, Target: vol.target, ReadOnly: vol.readOnly})
 	}
 
 	runDir, err := os.MkdirTemp("", "c2vm")
@@ -429,8 +420,8 @@ func runBoot(args []string) error {
 		Image:     imagePath,
 		CPUs:      opts.cpus,
 		MemoryMiB: opts.memoryMiB,
-		TTY:       opts.tty,
-		Stdin:     opts.stdin,
+		TTY:       config.TTY,
+		Stdin:     config.Stdin,
 		Shares:    shares,
 	})
 	if err != nil {
@@ -440,6 +431,24 @@ func runBoot(args []string) error {
 		return exitError(code)
 	}
 	return nil
+}
+
+// configure sets how init runs the command from the options: with a
+// terminal, with stdin, and with the volumes mounted. It returns the
+// directories the VM has to share for init to mount them, with the same
+// tags as config's mounts.
+func configure(opts bootOptions, config *guest.Config) []vm.Share {
+	config.TTY = opts.tty
+	// With a terminal, the command reads its input from the console.
+	config.Stdin = opts.stdin && !opts.tty
+
+	var shares []vm.Share
+	for i, vol := range opts.volumes {
+		tag := guest.MountTag(i)
+		shares = append(shares, vm.Share{Path: vol.source, Tag: tag, ReadOnly: vol.readOnly})
+		config.Mounts = append(config.Mounts, guest.Mount{Tag: tag, Target: vol.target, ReadOnly: vol.readOnly})
+	}
+	return shares
 }
 
 // defaultTerm is the TERM of interactive commands. The host's TERM may

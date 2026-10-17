@@ -7,6 +7,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"fcuny.net/c2vm/internal/guest"
+	"fcuny.net/c2vm/internal/vm"
 )
 
 func TestParseSave(t *testing.T) {
@@ -163,6 +166,48 @@ func TestParseBootVolumeErrors(t *testing.T) {
 		if _, err := parseBoot(append(args, "alpine")); err == nil {
 			t.Errorf("parseBoot(%q) succeeded, want an error", args)
 		}
+	}
+}
+
+func TestConfigure(t *testing.T) {
+	opts := bootOptions{
+		stdin: true,
+		volumes: volumeFlag{
+			{source: "/host/src", target: "/src"},
+			{source: "/host/data", target: "/data", readOnly: true},
+		},
+	}
+	var config guest.Config
+	shares := configure(opts, &config)
+
+	if config.TTY || !config.Stdin {
+		t.Errorf("TTY = %v, Stdin = %v, want false, true", config.TTY, config.Stdin)
+	}
+	wantShares := []vm.Share{
+		{Path: "/host/src", Tag: "c2vm0"},
+		{Path: "/host/data", Tag: "c2vm1", ReadOnly: true},
+	}
+	if !slices.Equal(shares, wantShares) {
+		t.Errorf("shares = %+v, want %+v", shares, wantShares)
+	}
+	// init finds each directory by the tag the VM shares it with.
+	wantMounts := []guest.Mount{
+		{Tag: "c2vm0", Target: "/src"},
+		{Tag: "c2vm1", Target: "/data", ReadOnly: true},
+	}
+	if !slices.Equal(config.Mounts, wantMounts) {
+		t.Errorf("mounts = %+v, want %+v", config.Mounts, wantMounts)
+	}
+}
+
+func TestConfigureTTY(t *testing.T) {
+	// With -t, the command reads the console: -i changes nothing.
+	var config guest.Config
+	if shares := configure(bootOptions{tty: true, stdin: true}, &config); shares != nil {
+		t.Errorf("shares = %+v, want none", shares)
+	}
+	if !config.TTY || config.Stdin {
+		t.Errorf("TTY = %v, Stdin = %v, want true, false", config.TTY, config.Stdin)
 	}
 }
 
