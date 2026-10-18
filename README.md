@@ -31,6 +31,18 @@ A command after `--` replaces the image's command, as with `docker run`; it's pa
 ./c2vm boot -t alpine -- sh
 ```
 
+Without `-t`, the command reads `/dev/null`. `-i` passes your stdin to it instead, as `docker run -i` does, over vsock, so the command reads EOF when your stdin ends:
+
+```sh
+cat run.sh | ./c2vm boot -i fedora -- bash
+```
+
+`-v source:target` mounts a directory of your Mac in the VM, as `docker run -v` does, with virtiofs; `:ro` makes it read-only. The source is an absolute path, or one relative to the current directory starting with `./` or `../`. Only directories can be shared, not single files. As with Docker Desktop, the files look like they belong to whichever user reads them in the VM, and what the VM writes belongs to you on the Mac:
+
+```sh
+./c2vm boot -v ./src:/src -v ./out:/out fedora -- make -C /src OUT=/out
+```
+
 `c2vm boot` exits with the command's exit status, which `c2vm-init` sends to the host over vsock before stopping the VM.
 
 `-e KEY=value` adds a variable to the image's environment, or replaces it; `-e KEY` copies it from your shell:

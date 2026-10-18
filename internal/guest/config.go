@@ -60,6 +60,12 @@ type Config struct {
 	// TTY makes the console the command's controlling terminal, for
 	// interactive commands.
 	TTY bool `json:"tty,omitempty"`
+	// Stdin connects the command's stdin to the host's, over vsock,
+	// when it isn't interactive. Without it, or TTY, the command's
+	// stdin is /dev/null.
+	Stdin bool `json:"stdin,omitempty"`
+	// Mounts are the host's directories to mount, in order.
+	Mounts []Mount `json:"mounts,omitempty"`
 	// Rows and Columns are the size of the host's terminal, set on the
 	// console when TTY is set.
 	Rows    uint16 `json:"rows,omitempty"`

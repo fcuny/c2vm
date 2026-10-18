@@ -7,12 +7,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/Code-Hex/vz/v3"
+	"golang.org/x/sys/unix"
 
 	"fcuny.net/c2vm/internal/guest"
 	"fcuny.net/c2vm/internal/vm"
@@ -96,6 +98,27 @@ func configuration(spec vm.Spec, input *os.File) (*vz.VirtualMachineConfiguratio
 	}
 	config.SetEntropyDevicesVirtualMachineConfiguration([]*vz.VirtioEntropyDeviceConfiguration{entropy})
 
+	// Each share is its own virtiofs device, which init mounts by its
+	// tag.
+	var shares []vz.DirectorySharingDeviceConfiguration
+	for _, s := range spec.Shares {
+		dir, err := vz.NewSharedDirectory(s.Path, s.ReadOnly)
+		if err != nil {
+			return nil, fmt.Errorf("sharing %s: %w", s.Path, err)
+		}
+		share, err := vz.NewSingleDirectoryShare(dir)
+		if err != nil {
+			return nil, fmt.Errorf("sharing %s: %w", s.Path, err)
+		}
+		fs, err := vz.NewVirtioFileSystemDeviceConfiguration(s.Tag)
+		if err != nil {
+			return nil, fmt.Errorf("sharing %s: %w", s.Path, err)
+		}
+		fs.SetDirectoryShare(share)
+		shares = append(shares, fs)
+	}
+	config.SetDirectorySharingDevicesVirtualMachineConfiguration(shares)
+
 	// init reports the command's exit status over vsock.
 	socket, err := vz.NewVirtioSocketDeviceConfiguration()
 	if err != nil {
@@ -115,8 +138,10 @@ func configuration(spec vm.Spec, input *os.File) (*vz.VirtualMachineConfiguratio
 // only live in memory. The status is then 128 plus the signal's number,
 // as with a shell. With spec.TTY, the terminal is in raw mode, so Ctrl-C
 // goes to the guest; escapeKey stops the VM instead, as SIGINT would.
+// Otherwise, the console only shows the command's output, and with
+// spec.Stdin, stdin goes to the command over vsock.
 func (b *Backend) Run(ctx context.Context, spec vm.Spec) (int, error) {
-	input := os.Stdin
+	var input *os.File
 	var escaped <-chan struct{}
 	if spec.TTY {
 		stdin, err := nonblockingInput(os.Stdin)
@@ -131,6 +156,16 @@ func (b *Backend) Run(ctx context.Context, spec vm.Spec) (int, error) {
 		// The console reads from r for as long as the VM runs.
 		defer r.Close()
 		input, escaped = r, esc
+	} else {
+		// Nothing reads the console's input: give it a pipe that's
+		// never written to, so it doesn't take any of stdin.
+		r, w, err := os.Pipe()
+		if err != nil {
+			return 0, err
+		}
+		defer r.Close()
+		defer w.Close()
+		input = r
 	}
 
 	config, err := configuration(spec, input)
@@ -146,6 +181,20 @@ func (b *Backend) Run(ctx context.Context, spec vm.Spec) (int, error) {
 	statuses, err := listenStatus(machine)
 	if err != nil {
 		return 0, err
+	}
+
+	if spec.Stdin && !spec.TTY {
+		stdin, err := nonblockingInput(os.Stdin)
+		if err != nil {
+			return 0, err
+		}
+		defer stdin.Close()
+		// nonblockingInput changes stdin's mode, which whatever reads
+		// it after c2vm doesn't expect.
+		defer unix.SetNonblock(int(os.Stdin.Fd()), false)
+		if err := sendStdin(machine, stdin); err != nil {
+			return 0, err
+		}
 	}
 
 	signals := make(chan os.Signal, 1)
@@ -256,4 +305,26 @@ func listenStatus(machine *vz.VirtualMachine) (<-chan int, error) {
 		statuses <- code
 	}()
 	return statuses, nil
+}
+
+// sendStdin copies in to init once it connects, and closes the
+// connection when in ends, for the command to read EOF. The command may
+// exit without reading all of it, as with a pipe: that isn't an error.
+func sendStdin(machine *vz.VirtualMachine, in io.Reader) error {
+	listener, err := listen(machine, guest.StdinPort)
+	if err != nil {
+		return err
+	}
+
+	go func() {
+		defer listener.Close()
+		conn, err := listener.Accept()
+		if err != nil {
+			log.Printf("waiting to pass stdin: %v", err)
+			return
+		}
+		defer conn.Close()
+		_, _ = io.Copy(conn, in)
+	}()
+	return nil
 }

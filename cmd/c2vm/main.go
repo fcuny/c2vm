@@ -203,6 +203,83 @@ type bootOptions struct {
 	env envFlag
 	// tty runs the command interactively, in the terminal.
 	tty bool
+	// stdin passes c2vm's stdin to the command.
+	stdin bool
+	// volumes are the host's directories to mount in the VM.
+	volumes volumeFlag
+}
+
+// volume is a directory of the host, mounted in the VM.
+type volume struct {
+	// source is the directory on the host, as an absolute path.
+	source string
+	// target is where it's mounted in the VM.
+	target   string
+	readOnly bool
+}
+
+// volumeFlag is a repeatable flag of directories to mount, as with
+// docker run -v: source:target, with an optional :ro or :rw. The source
+// is a path on the host, absolute or relative to the current directory
+// with ./ or ../; names alone would be docker's named volumes, which
+// c2vm doesn't have.
+type volumeFlag []volume
+
+func (v *volumeFlag) String() string {
+	var s []string
+	for _, vol := range *v {
+		s = append(s, vol.source+":"+vol.target)
+	}
+	return strings.Join(s, ",")
+}
+
+func (v *volumeFlag) Set(value string) error {
+	parts := strings.Split(value, ":")
+	if len(parts) < 2 || len(parts) > 3 {
+		return fmt.Errorf("invalid volume %q: expected source:target[:ro]", value)
+	}
+	vol := volume{source: parts[0], target: parts[1]}
+	if len(parts) == 3 {
+		switch parts[2] {
+		case "ro":
+			vol.readOnly = true
+		case "rw":
+		default:
+			return fmt.Errorf("invalid volume %q: unknown option %q, expected ro or rw", value, parts[2])
+		}
+	}
+
+	if !filepath.IsAbs(vol.source) && !strings.HasPrefix(vol.source, "./") && !strings.HasPrefix(vol.source, "../") && vol.source != "." && vol.source != ".." {
+		return fmt.Errorf("invalid volume %q: the source must be a path, absolute or starting with ./", value)
+	}
+	source, err := filepath.Abs(vol.source)
+	if err != nil {
+		return err
+	}
+	fi, err := os.Stat(source)
+	if err != nil {
+		return fmt.Errorf("invalid volume %q: %w", value, err)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("invalid volume %q: %s isn't a directory, only directories can be shared", value, source)
+	}
+	vol.source = source
+
+	if !strings.HasPrefix(vol.target, "/") {
+		return fmt.Errorf("invalid volume %q: the target must be an absolute path", value)
+	}
+	vol.target = filepath.Clean(vol.target)
+	if vol.target == "/" {
+		return fmt.Errorf("invalid volume %q: can't mount over /", value)
+	}
+	for _, other := range *v {
+		if other.target == vol.target {
+			return fmt.Errorf("invalid volume %q: %s is already mounted", value, vol.target)
+		}
+	}
+
+	*v = append(*v, vol)
+	return nil
 }
 
 // envFlag is a repeatable flag of environment variables. KEY=value sets
@@ -243,6 +320,8 @@ func parseBoot(args []string) (bootOptions, error) {
 	fs.Var(&opts.env, "e", "Set an environment variable, as KEY=value, or KEY to copy it from c2vm's environment (repeatable)")
 	fs.BoolVar(&opts.tty, "t", false, "Run the command interactively, in the terminal (Ctrl-] stops the VM)")
 	fs.BoolVar(&opts.tty, "it", false, "Same as -t")
+	fs.BoolVar(&opts.stdin, "i", false, "Pass stdin to the command, which otherwise reads /dev/null")
+	fs.Var(&opts.volumes, "v", "Mount a directory of the host, as source:target, with :ro to make it read-only (repeatable)")
 	opts.backend = backendFlags(fs)
 
 	args, command, hasCommand := splitCommand(args)
@@ -313,12 +392,12 @@ func runBoot(args []string) error {
 		return err
 	}
 	config.Shutdown = backend.Shutdown()
+	shares := configure(opts, &config)
 	if opts.tty {
 		stdin := int(os.Stdin.Fd())
 		if !term.IsTerminal(stdin) {
 			return errors.New("-t needs a terminal on stdin")
 		}
-		config.TTY = true
 		if columns, rows, err := term.GetSize(stdin); err == nil {
 			config.Rows, config.Columns = uint16(rows), uint16(columns)
 		}
@@ -341,7 +420,9 @@ func runBoot(args []string) error {
 		Image:     imagePath,
 		CPUs:      opts.cpus,
 		MemoryMiB: opts.memoryMiB,
-		TTY:       opts.tty,
+		TTY:       config.TTY,
+		Stdin:     config.Stdin,
+		Shares:    shares,
 	})
 	if err != nil {
 		return err
@@ -350,6 +431,24 @@ func runBoot(args []string) error {
 		return exitError(code)
 	}
 	return nil
+}
+
+// configure sets how init runs the command from the options: with a
+// terminal, with stdin, and with the volumes mounted. It returns the
+// directories the VM has to share for init to mount them, with the same
+// tags as config's mounts.
+func configure(opts bootOptions, config *guest.Config) []vm.Share {
+	config.TTY = opts.tty
+	// With a terminal, the command reads its input from the console.
+	config.Stdin = opts.stdin && !opts.tty
+
+	var shares []vm.Share
+	for i, vol := range opts.volumes {
+		tag := guest.MountTag(i)
+		shares = append(shares, vm.Share{Path: vol.source, Tag: tag, ReadOnly: vol.readOnly})
+		config.Mounts = append(config.Mounts, guest.Mount{Tag: tag, Target: vol.target, ReadOnly: vol.readOnly})
+	}
+	return shares
 }
 
 // defaultTerm is the TERM of interactive commands. The host's TERM may

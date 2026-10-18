@@ -19,6 +19,21 @@ type Spec struct {
 	// TTY puts the terminal in raw mode, to pass every key to the
 	// guest's console, for interactive commands.
 	TTY bool
+	// Stdin passes the process's stdin to init, for the command to
+	// read, when TTY isn't set.
+	Stdin bool
+	// Shares are the host's directories to share with the VM.
+	Shares []Share
+}
+
+// Share is a directory of the host the VM can mount.
+type Share struct {
+	// Path is the directory, on the host.
+	Path string
+	// Tag is the name the VM mounts it by.
+	Tag string
+	// ReadOnly keeps the VM from modifying it.
+	ReadOnly bool
 }
 
 // Backend runs VMs with a given hypervisor.

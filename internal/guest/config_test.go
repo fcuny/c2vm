@@ -3,6 +3,7 @@ package guest
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -36,9 +37,22 @@ func TestFromImageNoCommand(t *testing.T) {
 }
 
 func TestConfigRoundTrip(t *testing.T) {
-	want := Config{Args: []string{"sh", "-c", "echo 'hi'"}, Env: []string{"A=b c"}, WorkingDir: "/w", User: "1000:1000", Shutdown: ShutdownPowerOff}
+	// Every field is set, so one that doesn't survive the trip to init,
+	// e.g. with a mistyped JSON name, is caught.
+	want := Config{
+		Args:       []string{"sh", "-c", "echo 'hi'"},
+		Env:        []string{"A=b c"},
+		WorkingDir: "/w",
+		User:       "1000:1000",
+		Shutdown:   ShutdownPowerOff,
+		TTY:        true,
+		Rows:       40,
+		Columns:    120,
+		Stdin:      true,
+		Mounts:     []Mount{{Tag: "c2vm0", Target: "/src"}, {Tag: "c2vm1", Target: "/data", ReadOnly: true}},
+	}
 	got := roundTrip(t, want)
-	if !slices.Equal(got.Args, want.Args) || !slices.Equal(got.Env, want.Env) || got.WorkingDir != want.WorkingDir || got.User != want.User || got.Shutdown != want.Shutdown {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v, want %+v", got, want)
 	}
 }
