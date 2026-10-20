@@ -2,6 +2,7 @@
 //
 //	c2vm save [flags] <image>
 //	c2vm boot [flags] <image> [-- command [args...]]
+//	c2vm version
 package main
 
 import (
@@ -30,8 +31,9 @@ import (
 const usage = `usage: c2vm <command> [flags] <image>
 
 Commands:
-  save  pull an image and convert it for booting
-  boot  boot an image as a VM
+  save     pull an image and convert it for booting
+  boot     boot an image as a VM
+  version  print c2vm's version
 
 Run c2vm <command> -h for the command's flags.
 `
@@ -51,6 +53,9 @@ func main() {
 		err = runSave(args)
 	case "boot":
 		err = runBoot(args)
+	case "version", "-version", "--version":
+		fmt.Println("c2vm", version())
+		return
 	case "-h", "-help", "--help", "help":
 		fmt.Print(usage)
 		return
