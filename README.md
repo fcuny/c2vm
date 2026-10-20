@@ -8,6 +8,27 @@ It started as a way to understand how [fly.io](https://fly.io) runs its customer
 
 It used to do that with containerd and Firecracker, on Linux. As I work on a macOS workstation, it now pulls images straight from their registry and boots them with Apple's Virtualization.framework.
 
+## Use cases
+
+Docker Desktop and `podman machine` run one long-lived Linux VM that all containers share. c2vm boots a VM per command, from any image, with its own kernel, as root unless the image sets a user, and nothing left behind in the VM when it stops (the converted image and the kernel stay cached on the Mac). That makes it handy for:
+
+- **A disposable Linux machine for something quick**: try a Linux-only tool, without setting anything up and with a fresh root filesystem every time. For example, pulling a Fedora IoT OSTree commit, composing a new commit with an extra RPM, signing it, serving it over HTTP and deploying it into a scratch sysroot, all in one `./c2vm boot -memory 10240 fedora -- …`.
+- **Checking a script against several distros**, since `c2vm boot` exits with the command's status:
+
+  ```sh
+  for i in alpine debian fedora; do ./c2vm boot -i $i -- sh < check.sh || echo "$i: failed"; done
+  ```
+
+- **Running a service from an image and reaching it from the Mac**, without a container runtime: `./c2vm boot nginx`, and open the address `c2vm-init` prints.
+- **Seeing how an image behaves as a VM**, as fly.io runs them: what it assumes about PID 1, `/dev`, users and its environment when there's no container runtime around it.
+- **Trying a kernel**: `-kernel` boots the same image on a different kernel or configuration.
+- **Building a project from the Mac's checkout on Linux**, with the checkout mounted with `-v`: see [building bootc](docs/examples/build-on-linux.md).
+
+Some limits to keep in mind:
+
+- The writable layer is in memory, capped at half of `-memory`, so jobs that write a lot outside a `-v` mount need a big VM ([#40](https://github.com/fcuny/c2vm/issues/40)).
+- It runs on macOS on Apple silicon only, and boots arm64 images only: the kernel is arm64 and there's no Rosetta, so a `-platform linux/amd64` image pulls but its binaries can't run.
+
 ## How
 
 c2vm runs on macOS, on Apple silicon. There's nothing to set up: `make build` builds and signs `c2vm`, and builds `c2vm-init`.
