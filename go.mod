@@ -5,6 +5,7 @@ go 1.26.6
 require (
 	github.com/Code-Hex/vz/v3 v3.8.0
 	github.com/Microsoft/hcsshim v0.14.1
+	github.com/creack/pty v1.1.24
 	github.com/google/go-containerregistry v0.22.1
 	github.com/google/renameio/v2 v2.0.2
 	github.com/opencontainers/image-spec v1.1.1

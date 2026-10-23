@@ -111,3 +111,7 @@ The kernel is built by a GitHub Actions workflow; to build it yourself, on Linux
 ### Signing
 
 Virtualization.framework only lets binaries signed with the `com.apple.security.virtualization` entitlement create VMs. `make build` signs `c2vm` with an ad-hoc signature, which is enough to run it locally; a binary built with `go build` alone fails to boot VMs.
+
+### Testing
+
+`go test ./...` runs the unit tests, which don't boot anything. `make e2e` builds c2vm and c2vm-init and boots VMs with them, from `alpine`, to check what commands see and do in the VM: their output and exit status, `-e`, `-i`, `-t` and `-v`. It needs macOS on Apple silicon and the network, and CI can't run it ([#53](https://github.com/fcuny/c2vm/issues/53)): run it before opening a PR.
