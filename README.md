@@ -88,7 +88,7 @@ Each image is converted to a read-only ext4 filesystem, without mounting anythin
 
 At boot, `c2vm-init` runs from an initramfs: it mounts the image with a writable in-memory layer on top, and runs the image's entrypoint and command as the image's user, from its working directory and with its environment. Changes are lost when the VM stops.
 
-`c2vm-init` is a static Linux binary for the Mac's architecture, which `make build` builds and embeds in `c2vm`, so `c2vm` is the only file to copy around. `-init` boots another one, to try changes to it without rebuilding `c2vm`. A `c2vm` built without it, as with `go install`, looks for `c2vm-init` next to itself.
+`c2vm-init` is a static Linux binary for the Mac's architecture, which `make build` builds and embeds in `c2vm`, so `c2vm` is the only file to copy around. `-init` boots another one, to try changes to it without rebuilding `c2vm`.
 
 ### Kernel
 
@@ -110,7 +110,7 @@ The kernel is built by a GitHub Actions workflow; to build it yourself, on Linux
 
 ### Signing
 
-Virtualization.framework only lets binaries signed with the `com.apple.security.virtualization` entitlement create VMs. `make build` signs `c2vm` with an ad-hoc signature, which is enough to run it locally; a binary built with `go build` alone fails to boot VMs.
+Virtualization.framework only lets binaries signed with the `com.apple.security.virtualization` entitlement create VMs. `make build` signs `c2vm` with an ad-hoc signature, which is enough to run it locally; a binary built with `go build` alone fails to boot VMs. So does one from `go install`, which also has no `c2vm-init` built in: use `make build`.
 
 ### Testing
 

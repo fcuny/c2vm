@@ -13,6 +13,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -90,13 +91,28 @@ func testMain(m *testing.M) int {
 }
 
 // build builds c2vm as make build does, so the tests boot what ships:
-// c2vm-init for Linux, on arm64 whatever GOARCH says, as that's the only
-// architecture VMs can run, then c2vm with it embedded, signed with the
-// entitlement to create VMs.
+// c2vm-init for Linux on arm64, then c2vm with it embedded, signed with
+// the entitlement to create VMs. The init is built next to c2vm, and an
+// overlay embeds it from there, so the tests leave the checkout alone.
 func build(c2vm string) error {
+	dir := filepath.Dir(c2vm)
+	c2vmInit := filepath.Join(dir, "c2vm-init")
+	embedPath, err := filepath.Abs("../cmd/c2vm/c2vm-init")
+	if err != nil {
+		return err
+	}
+	overlay, err := json.Marshal(map[string]map[string]string{"Replace": {embedPath: c2vmInit}})
+	if err != nil {
+		return err
+	}
+	overlayPath := filepath.Join(dir, "overlay.json")
+	if err := os.WriteFile(overlayPath, overlay, 0o644); err != nil {
+		return err
+	}
+
 	cmds := []*exec.Cmd{
-		exec.Command("go", "build", "-o", "../cmd/c2vm/c2vm-init", "../cmd/c2vm-init"),
-		exec.Command("go", "build", "-tags", "embedinit", "-o", c2vm, "../cmd/c2vm"),
+		exec.Command("go", "build", "-o", c2vmInit, "../cmd/c2vm-init"),
+		exec.Command("go", "build", "-tags", "embedinit", "-overlay", overlayPath, "-o", c2vm, "../cmd/c2vm"),
 		exec.Command("codesign", "--force", "--sign", "-", "--entitlements", "../hack/vz.entitlements", c2vm),
 	}
 	cmds[0].Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH=arm64")

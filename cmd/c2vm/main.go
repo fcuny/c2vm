@@ -319,7 +319,7 @@ func parseBoot(args []string) (bootOptions, error) {
 	}
 	finish := opts.register(fs)
 	fs.StringVar(&opts.kernel, "kernel", defaultKernel, "Kernel to boot: a file, or an image with the kernel in "+kernelPath)
-	fs.StringVar(&opts.initBinary, "init", "", "Path to a c2vm-init binary, in place of the one built into c2vm")
+	fs.StringVar(&opts.initBinary, "init", "", "Path to a c2vm-init binary to boot (default: the one built into c2vm)")
 	fs.Int64Var(&opts.cpus, "cpus", 1, "Number of vCPUs")
 	fs.Int64Var(&opts.memoryMiB, "memory", 512, "Memory for the VM, in MiB")
 	fs.Var(&opts.env, "e", "Set an environment variable, as KEY=value, or KEY to copy it from c2vm's environment (repeatable)")
@@ -513,31 +513,6 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	return f.CloseAtomicallyReplace()
-}
-
-// loadInit returns the c2vm-init binary: the file at path if set, then
-// the one built into c2vm, then c2vm-init in the same directory as c2vm,
-// for a c2vm built without it (as go install does).
-func loadInit(path string) ([]byte, error) {
-	if path == "" {
-		if embeddedInit != nil {
-			return embeddedInit, nil
-		}
-		self, err := os.Executable()
-		if err != nil {
-			return nil, err
-		}
-		path = filepath.Join(filepath.Dir(self), "c2vm-init")
-	}
-
-	fi, err := os.Stat(path)
-	if err != nil {
-		return nil, fmt.Errorf("c2vm-init not found (build c2vm with make, or set -init): %w", err)
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular file", path)
-	}
-	return os.ReadFile(path)
 }
 
 func writeInitramfs(path string, init []byte, config guest.Config) error {
