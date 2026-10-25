@@ -1,7 +1,8 @@
 name: kernel-update
 
 # Opens a draft PR that moves the guest kernel to a new release, with
-# kernel/update.sh.
+# kernel/update.sh: the one it's given, or every day, kernel.org's latest
+# stable release if it's newer than ours.
 #
 # It pushes and opens the PR with KERNEL_BOT_TOKEN, a fine-grained token
 # for this repository with read and write access to contents and pull
@@ -9,11 +10,13 @@ name: kernel-update
 # PR needs the kernel workflow to build it.
 
 on:
+  schedule:
+    - cron: '23 7 * * *'
   workflow_dispatch:
     inputs:
       version:
-        description: Kernel release, e.g. 7.3.1
-        required: true
+        description: "Kernel release, e.g. 7.3.1 (default: kernel.org's latest stable)"
+        required: false
 
 # One run at a time. A run started while another one waits replaces it,
 # which loses nothing: the newest release supersedes the older ones.
@@ -33,7 +36,7 @@ jobs:
         # With pipefail, which the default shell doesn't set.
         shell: bash
     env:
-      VERSION: ${{ inputs.version }}
+      REQUESTED: ${{ inputs.version }}
     steps:
       # The PR is against main, so start from it, whichever branch this
       # runs from. The token isn't kept in .git/config: run.sh mounts the
@@ -50,16 +53,22 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.KERNEL_BOT_TOKEN }}
         run: |
+          VERSION=$REQUESTED
+          if [[ -z $VERSION ]]; then
+            VERSION=$(curl -fsSL https://www.kernel.org/releases.json | jq -r .latest_stable.version)
+            echo "kernel.org's latest stable release is $VERSION"
+          fi
           if [[ ! $VERSION =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
             echo "not a kernel release: $VERSION" >&2
             exit 1
           fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           branch=kernel/$VERSION
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
           current=$(cat kernel/VERSION)
           echo "current=$current" >> "$GITHUB_OUTPUT"
-          if [[ $VERSION == "$current" ]]; then
-            echo "already on $VERSION"
+          if [[ $(printf '%s\n' "$current" "$VERSION" | sort -V | tail -n 1) == "$current" ]]; then
+            echo "already on $current, which is $VERSION or newer"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           elif [[ -n $(gh pr list --head "$branch" --state open --json number --jq '.[]') ]]; then
             echo "there's already a PR for $VERSION"
