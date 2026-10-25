@@ -4,7 +4,8 @@
 //
 //	C2VM_E2E=1 go test -count=1 -timeout 30m ./e2e
 //
-// or make e2e.
+// or make e2e. The VMs boot c2vm's default kernel, or C2VM_E2E_KERNEL:
+// what c2vm boot -kernel takes, a file by its absolute path or an image.
 package e2e
 
 import (
@@ -44,6 +45,8 @@ var (
 	skip string
 	// c2vm and c2vmInit are the binaries built for the tests.
 	c2vm, c2vmInit string
+	// bootArgs come first in every c2vm boot.
+	bootArgs []string
 )
 
 func TestMain(m *testing.M) {
@@ -73,11 +76,22 @@ func testMain(m *testing.M) int {
 		return 1
 	}
 
+	bootArgs = []string{"-init", c2vmInit}
+	if kernel := os.Getenv("C2VM_E2E_KERNEL"); kernel != "" {
+		// The tests run from e2e/, not from where make or go test was
+		// run: a relative path would be another file, or an image.
+		if strings.HasPrefix(kernel, ".") {
+			fmt.Fprintf(os.Stderr, "C2VM_E2E_KERNEL: %s: use an absolute path\n", kernel)
+			return 1
+		}
+		bootArgs = append(bootArgs, "-kernel", kernel)
+	}
+
 	// Pull the kernel and the image once, before the tests boot VMs in
 	// parallel and would all fetch them at the same time.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	warm := exec.CommandContext(ctx, c2vm, "boot", "-init", c2vmInit, image, "--", "true")
+	warm := exec.CommandContext(ctx, c2vm, slices.Concat([]string{"boot"}, bootArgs, []string{image, "--", "true"})...)
 	// SIGTERM lets c2vm remove its files, which SIGKILL wouldn't.
 	warm.Cancel = func() error { return warm.Process.Signal(syscall.SIGTERM) }
 	warm.WaitDelay = 10 * time.Second
@@ -117,7 +131,7 @@ func bootCmd(t *testing.T, args ...string) *exec.Cmd {
 
 	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	t.Cleanup(cancel)
-	cmd := exec.CommandContext(ctx, c2vm, append([]string{"boot", "-init", c2vmInit}, args...)...)
+	cmd := exec.CommandContext(ctx, c2vm, slices.Concat([]string{"boot"}, bootArgs, args)...)
 	// The context also ends with the test: only a timeout is an error.
 	cmd.Cancel = func() error {
 		if ctx.Err() == context.DeadlineExceeded {
