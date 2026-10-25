@@ -407,15 +407,29 @@ func (term *terminal) output() string {
 	return term.out.String()
 }
 
-// waitFor waits for s to show up on the terminal.
+// waitFor waits for s to show up on the terminal. It fails as soon as
+// the terminal's output ends without it: c2vm exited, e.g. as the image
+// couldn't be pulled, or was stopped as it ran past its timeout, which
+// bootCmd reports.
 func (term *terminal) waitFor(s string) {
 	term.t.Helper()
-	deadline := time.Now().Add(timeout)
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	// bootCmd's context, which started first, runs out before this: it's
+	// in case c2vm doesn't stop then.
+	deadline := time.After(timeout + time.Minute)
 	for !strings.Contains(term.output(), s) {
-		if time.Now().After(deadline) {
+		select {
+		case <-term.done:
+			// The last read may have brought s.
+			if strings.Contains(term.output(), s) {
+				return
+			}
+			term.t.Fatalf("the terminal's output ended before %q showed up", s)
+		case <-deadline:
 			term.t.Fatalf("%q never showed up on the terminal", s)
+		case <-tick.C:
 		}
-		time.Sleep(50 * time.Millisecond)
 	}
 }
 
