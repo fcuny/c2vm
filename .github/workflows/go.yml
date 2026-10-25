@@ -56,4 +56,10 @@ jobs:
         run: |
           make build
           codesign -d --entitlements - c2vm | grep -q com.apple.security.virtualization
-          file c2vm-init | grep -q 'ELF 64-bit LSB executable, ARM aarch64'
+
+      # The steps above build without the embedinit tag, which needs the
+      # init make build just built.
+      - name: Go vet and test, with the init embedded
+        run: |
+          go vet -tags embedinit ./...
+          go test -tags embedinit -v ./cmd/c2vm

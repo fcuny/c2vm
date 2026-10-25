@@ -1,4 +1,4 @@
 /cmd/c2vm/c2vm
 /c2vm
-/c2vm-init
 /kernel/out/
+/cmd/c2vm/c2vm-init
