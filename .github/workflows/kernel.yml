@@ -45,7 +45,9 @@ jobs:
   publish:
     name: Publish
     needs: build
-    if: github.event_name != 'pull_request'
+    # From main only: run by hand on another branch, the workflow builds
+    # the kernel (see the artifact) without replacing the published one.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
