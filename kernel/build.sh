@@ -16,7 +16,7 @@ out=${1:?usage: build.sh <output dir>}
 here=$(cd "$(dirname "$0")" && pwd)
 version=$(cat "$here/VERSION")
 major=${version%%.*}
-series=${version%.*}
+series=$(cut -d. -f1-2 <<< "$version")
 
 config=$here/configs/$series/aarch64.config
 if [[ ! -f $config ]]; then
