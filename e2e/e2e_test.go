@@ -5,7 +5,7 @@
 //	C2VM_E2E=1 go test -count=1 -timeout 30m ./e2e
 //
 // or make e2e. The VMs boot c2vm's default kernel, or C2VM_E2E_KERNEL:
-// what c2vm boot -kernel takes, a file by its absolute path or an image.
+// an image, or a kernel file by its absolute path.
 package e2e
 
 import (
@@ -78,10 +78,8 @@ func testMain(m *testing.M) int {
 
 	bootArgs = []string{"-init", c2vmInit}
 	if kernel := os.Getenv("C2VM_E2E_KERNEL"); kernel != "" {
-		// The tests run from e2e/, not from where make or go test was
-		// run: a relative path would be another file, or an image.
-		if strings.HasPrefix(kernel, ".") {
-			fmt.Fprintf(os.Stderr, "C2VM_E2E_KERNEL: %s: use an absolute path\n", kernel)
+		if err := checkKernel(kernel); err != nil {
+			fmt.Fprintf(os.Stderr, "C2VM_E2E_KERNEL: %v\n", err)
 			return 1
 		}
 		bootArgs = append(bootArgs, "-kernel", kernel)
@@ -101,6 +99,28 @@ func testMain(m *testing.M) int {
 	}
 
 	return m.Run()
+}
+
+// checkKernel fails if kernel, which c2vm boot -kernel takes, would be
+// the wrong file or image. c2vm boots a file if there's one, and pulls
+// an image otherwise, but the tests run from e2e/, not from where make or
+// go test was run: a relative path names another file there, or nothing,
+// and then an image. So a file must be an absolute path, and exist.
+func checkKernel(kernel string) error {
+	if filepath.IsAbs(kernel) {
+		if _, err := os.Stat(kernel); err != nil {
+			return err
+		}
+		return nil
+	}
+	if strings.HasPrefix(kernel, ".") {
+		return fmt.Errorf("%s: use an absolute path", kernel)
+	}
+	// Most likely relative to the top of the repository.
+	if _, err := os.Stat(filepath.Join("..", kernel)); err == nil {
+		return fmt.Errorf("%s: use an absolute path", kernel)
+	}
+	return nil
 }
 
 // build builds c2vm and c2vm-init as make build does: c2vm signed with
