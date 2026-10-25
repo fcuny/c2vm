@@ -56,4 +56,5 @@ jobs:
         run: |
           make build
           codesign -d --entitlements - c2vm | grep -q com.apple.security.virtualization
-          file c2vm-init | grep -q 'ELF 64-bit LSB executable, ARM aarch64'
+          file cmd/c2vm/c2vm-init | grep -q 'ELF 64-bit LSB executable, ARM aarch64'
+          go version -m c2vm | grep -q -- '-tags=embedinit'

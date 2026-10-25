@@ -319,7 +319,7 @@ func parseBoot(args []string) (bootOptions, error) {
 	}
 	finish := opts.register(fs)
 	fs.StringVar(&opts.kernel, "kernel", defaultKernel, "Kernel to boot: a file, or an image with the kernel in "+kernelPath)
-	fs.StringVar(&opts.initBinary, "init", "", "Path to the c2vm-init binary (default: c2vm-init next to c2vm)")
+	fs.StringVar(&opts.initBinary, "init", "", "Path to a c2vm-init binary, in place of the one built into c2vm")
 	fs.Int64Var(&opts.cpus, "cpus", 1, "Number of vCPUs")
 	fs.Int64Var(&opts.memoryMiB, "memory", 512, "Memory for the VM, in MiB")
 	fs.Var(&opts.env, "e", "Set an environment variable, as KEY=value, or KEY to copy it from c2vm's environment (repeatable)")
@@ -361,7 +361,7 @@ func runBoot(args []string) error {
 		return err
 	}
 
-	initBinary, err := findInit(opts.initBinary)
+	init, err := loadInit(opts.initBinary)
 	if err != nil {
 		return err
 	}
@@ -415,7 +415,7 @@ func runBoot(args []string) error {
 	defer os.RemoveAll(runDir)
 
 	initrd := filepath.Join(runDir, "initrd.cpio")
-	if err := writeInitramfs(initrd, initBinary, config); err != nil {
+	if err := writeInitramfs(initrd, init, config); err != nil {
 		return fmt.Errorf("failed to build the initramfs: %w", err)
 	}
 
@@ -515,33 +515,37 @@ func copyFile(src, dst string) error {
 	return f.CloseAtomicallyReplace()
 }
 
-// findInit returns the path to the c2vm-init binary: path if set,
-// otherwise c2vm-init in the same directory as c2vm.
-func findInit(path string) (string, error) {
+// loadInit returns the c2vm-init binary: the file at path if set, then
+// the one built into c2vm, then c2vm-init in the same directory as c2vm,
+// for a c2vm built without it (as go install does).
+func loadInit(path string) ([]byte, error) {
 	if path == "" {
+		if embeddedInit != nil {
+			return embeddedInit, nil
+		}
 		self, err := os.Executable()
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		path = filepath.Join(filepath.Dir(self), "c2vm-init")
 	}
 
 	fi, err := os.Stat(path)
 	if err != nil {
-		return "", fmt.Errorf("c2vm-init not found (build it with make, or set -init): %w", err)
+		return nil, fmt.Errorf("c2vm-init not found (build c2vm with make, or set -init): %w", err)
 	}
 	if !fi.Mode().IsRegular() {
-		return "", fmt.Errorf("%s is not a regular file", path)
+		return nil, fmt.Errorf("%s is not a regular file", path)
 	}
-	return path, nil
+	return os.ReadFile(path)
 }
 
-func writeInitramfs(path, initBinary string, config guest.Config) error {
+func writeInitramfs(path string, init []byte, config guest.Config) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
-	if err := initramfs.Write(f, initBinary, config); err != nil {
+	if err := initramfs.Write(f, init, config); err != nil {
 		f.Close()
 		return err
 	}

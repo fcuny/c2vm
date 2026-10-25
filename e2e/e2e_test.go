@@ -42,8 +42,8 @@ const timeout = 2 * time.Minute
 var (
 	// skip is why the tests don't run, if they don't.
 	skip string
-	// c2vm and c2vmInit are the binaries built for the tests.
-	c2vm, c2vmInit string
+	// c2vm is the binary built for the tests.
+	c2vm string
 )
 
 func TestMain(m *testing.M) {
@@ -67,8 +67,8 @@ func testMain(m *testing.M) int {
 	}
 	defer os.RemoveAll(dir)
 
-	c2vm, c2vmInit = filepath.Join(dir, "c2vm"), filepath.Join(dir, "c2vm-init")
-	if err := build(c2vm, c2vmInit); err != nil {
+	c2vm = filepath.Join(dir, "c2vm")
+	if err := build(c2vm); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
@@ -77,7 +77,7 @@ func testMain(m *testing.M) int {
 	// parallel and would all fetch them at the same time.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	warm := exec.CommandContext(ctx, c2vm, "boot", "-init", c2vmInit, image, "--", "true")
+	warm := exec.CommandContext(ctx, c2vm, "boot", image, "--", "true")
 	// SIGTERM lets c2vm remove its files, which SIGKILL wouldn't.
 	warm.Cancel = func() error { return warm.Process.Signal(syscall.SIGTERM) }
 	warm.WaitDelay = 10 * time.Second
@@ -89,16 +89,17 @@ func testMain(m *testing.M) int {
 	return m.Run()
 }
 
-// build builds c2vm and c2vm-init as make build does: c2vm signed with
-// the entitlement to create VMs, and c2vm-init for Linux, on arm64
-// whatever GOARCH says, as that's the only architecture VMs can run.
-func build(c2vm, c2vmInit string) error {
+// build builds c2vm as make build does, so the tests boot what ships:
+// c2vm-init for Linux, on arm64 whatever GOARCH says, as that's the only
+// architecture VMs can run, then c2vm with it embedded, signed with the
+// entitlement to create VMs.
+func build(c2vm string) error {
 	cmds := []*exec.Cmd{
-		exec.Command("go", "build", "-o", c2vm, "../cmd/c2vm"),
+		exec.Command("go", "build", "-o", "../cmd/c2vm/c2vm-init", "../cmd/c2vm-init"),
+		exec.Command("go", "build", "-tags", "embedinit", "-o", c2vm, "../cmd/c2vm"),
 		exec.Command("codesign", "--force", "--sign", "-", "--entitlements", "../hack/vz.entitlements", c2vm),
-		exec.Command("go", "build", "-o", c2vmInit, "../cmd/c2vm-init"),
 	}
-	cmds[2].Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH=arm64")
+	cmds[0].Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH=arm64")
 	for _, cmd := range cmds {
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("%s: %v\n%s", strings.Join(cmd.Args, " "), err, out)
@@ -117,7 +118,7 @@ func bootCmd(t *testing.T, args ...string) *exec.Cmd {
 
 	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	t.Cleanup(cancel)
-	cmd := exec.CommandContext(ctx, c2vm, append([]string{"boot", "-init", c2vmInit}, args...)...)
+	cmd := exec.CommandContext(ctx, c2vm, append([]string{"boot"}, args...)...)
 	// The context also ends with the test: only a timeout is an error.
 	cmd.Cancel = func() error {
 		if ctx.Err() == context.DeadlineExceeded {

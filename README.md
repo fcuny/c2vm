@@ -31,7 +31,7 @@ Some limits to keep in mind:
 
 ## How
 
-c2vm runs on macOS, on Apple silicon. There's nothing to set up: `make build` builds and signs `c2vm`, and builds `c2vm-init`.
+c2vm runs on macOS, on Apple silicon. There's nothing to set up: `make build` builds `c2vm`, with `c2vm-init` in it, and signs it.
 
 ```sh
 make build
@@ -88,7 +88,7 @@ Each image is converted to a read-only ext4 filesystem, without mounting anythin
 
 At boot, `c2vm-init` runs from an initramfs: it mounts the image with a writable in-memory layer on top, and runs the image's entrypoint and command as the image's user, from its working directory and with its environment. Changes are lost when the VM stops.
 
-`c2vm` looks for `c2vm-init` next to itself; use `-init` to point elsewhere. It's a static Linux binary for the Mac's architecture, which `make build` takes care of.
+`c2vm-init` is a static Linux binary for the Mac's architecture, which `make build` builds and embeds in `c2vm`, so `c2vm` is the only file to copy around. `-init` boots another one, to try changes to it without rebuilding `c2vm`. A `c2vm` built without it, as with `go install`, looks for `c2vm-init` next to itself.
 
 ### Kernel
 
@@ -114,4 +114,4 @@ Virtualization.framework only lets binaries signed with the `com.apple.security.
 
 ### Testing
 
-`go test ./...` runs the unit tests, which don't boot anything. `make e2e` builds c2vm and c2vm-init and boots VMs with them, from `alpine`, to check what commands see and do in the VM: their output and exit status, `-e`, `-i`, `-t` and `-v`. It needs macOS on Apple silicon and the network, and CI can't run it ([#53](https://github.com/fcuny/c2vm/issues/53)): run it before opening a PR.
+`go test ./...` runs the unit tests, which don't boot anything. `make e2e` builds c2vm, with c2vm-init embedded, and boots VMs with them, from `alpine`, to check what commands see and do in the VM: their output and exit status, `-e`, `-i`, `-t` and `-v`. It needs macOS on Apple silicon and the network, and CI can't run it ([#53](https://github.com/fcuny/c2vm/issues/53)): run it before opening a PR.
