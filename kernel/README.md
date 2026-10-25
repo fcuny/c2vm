@@ -22,7 +22,7 @@ The config enables virtio over PCI, which Virtualization.framework uses, and bui
 
 We follow the latest stable series. The [kernel-update workflow](../.github/workflows/kernel-update.yml) checks kernel.org's latest stable release every day, and when it's newer than `VERSION`, runs `update.sh` with it and opens a draft PR, with the config changes in its description; it can also be run by hand with a release. Review the config changes, and test the kernel with `test/pr.py` before merging (see below). When the kernel workflow publishes a new series, it opens another draft PR, which moves the default kernel in `cmd/c2vm/kernel.go` (and the examples) to the new tag; run `make e2e` before merging it. Options c2vm needs go in `configs/c2vm.fragment`.
 
-To skip a release, close its PR: the daily check won't open it again. Run by hand, the workflow goes ahead with any release other than the current one, e.g. to roll back, and fails when there's nothing to do. GitHub disables scheduled workflows after 60 days without activity in the repository: then there are no more PRs until it's enabled again, from the Actions tab.
+To skip a release, close its PR: the daily check won't open it again. Likewise, closing the PR for a new default kernel keeps the current one: it isn't opened again when the series gets new releases, and moving the default is then a PR by hand. Run by hand, the workflow goes ahead with any release other than the current one, e.g. to roll back, and fails when there's nothing to do. GitHub disables scheduled workflows after 60 days without activity in the repository: then there are no more PRs until it's enabled again, from the Actions tab.
 
 ## Testing a kernel
 
