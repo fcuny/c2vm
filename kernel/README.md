@@ -5,7 +5,7 @@ The kernel c2vm boots with Apple's Virtualization.framework, for arm64.
 - `VERSION`: the kernel release to build.
 - `configs/<series>/aarch64.config`: the full config for the series of `VERSION` (e.g. `7.2`), the one we ship. It started from Firecracker's CI guest config for 6.18 (see `configs/NOTICE`), a minimal config for microVMs that also works with Virtualization.framework.
 - `configs/c2vm.fragment`: the options c2vm needs.
-- `build.sh`: downloads the release from kernel.org, checks its checksum, and builds it with the series' config. It fails if `make olddefconfig` would change the config (other than for what the toolchain decides), or if an option from the fragment isn't in it.
+- `build.sh`: downloads the release from kernel.org, checks its checksum, and builds it with the series' config. It fails if `make olddefconfig` would change the config, toolchain options included, or if an option from the fragment isn't in it.
 - `update.sh <version>`: moves to a new release. It updates `VERSION` and regenerates the config from the current one, merging in the fragment and giving new options their default value, then prints what changed in the config.
 - `run.sh <command>`: runs `build.sh` or `update.sh` with a pinned toolchain: Debian at a fixed digest, with the packages `builder.sh` installs. On macOS it boots it with c2vm, with the checkout mounted; elsewhere (and in CI), it runs it with docker. The toolchain only changes when the digest or the packages do, and the config's toolchain options with it.
 

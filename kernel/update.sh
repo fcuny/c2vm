@@ -37,7 +37,7 @@ src=$work/linux-$version
 
 cp "$old" "$src/.config"
 (cd "$src" && ./scripts/kconfig/merge_config.sh -m .config "$fragment")
-make -C "$src" "${make_args[@]}" olddefconfig
+make -C "$src" ARCH=arm64 olddefconfig
 # Kconfig only warns when an option can't be set, e.g. a dependency is
 # missing.
 if ! check_fragment "$src/.config"; then

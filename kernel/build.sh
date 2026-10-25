@@ -6,9 +6,8 @@
 #   kernel/build.sh <output dir>
 #
 # The kernel ends up in <output dir>/arm64/kernel, along with its config.
-# Run it with run.sh, which provides the toolchain. It also works on a
-# Linux host with the usual kernel build dependencies, plus
-# gcc-aarch64-linux-gnu to cross-compile when the host isn't arm64.
+# Run it with run.sh: the config is generated with its toolchain, and the
+# build fails with another one.
 
 set -euo pipefail
 
@@ -39,7 +38,7 @@ fetch "$version" "$work"
 src=$work/linux-$version
 
 cp "$config" "$src/.config"
-make -C "$src" "${make_args[@]}" olddefconfig
+make -C "$src" ARCH=arm64 olddefconfig
 
 # The config is the one we ship, so olddefconfig shouldn't change it. If
 # it does, e.g. a patch release added an option, it needs to be
@@ -49,7 +48,7 @@ if ! diff -u <(options "$config") <(options "$src/.config") >&2; then
 	exit 1
 fi
 
-make -C "$src" "${make_args[@]}" -j"$(nproc)" Image
+make -C "$src" ARCH=arm64 -j"$(nproc)" Image
 
 mkdir -p "$out/arm64"
 cp "$src/arch/arm64/boot/Image" "$out/arm64/kernel"

@@ -29,3 +29,6 @@ CONFIG_IP_PNP_DHCP=y
 
 # Shows up in `uname -r`, to tell our builds apart.
 CONFIG_LOCALVERSION="-c2vm"
+
+# Firecracker's config had Amazon's, which goes in the build ID.
+CONFIG_BUILD_SALT=""

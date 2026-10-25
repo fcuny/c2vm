@@ -4,12 +4,6 @@
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 fragment=$here/configs/c2vm.fragment
 
-# Builds for arm64, cross-compiling when the host isn't.
-make_args=(ARCH=arm64)
-if [[ $(uname -m) != aarch64 ]]; then
-	make_args+=(CROSS_COMPILE=aarch64-linux-gnu-)
-fi
-
 # series_of <version>: its series, e.g. 7.4 for 7.4 and 7.4.1.
 series_of() {
 	"$here/series.sh" "$1"
@@ -39,11 +33,12 @@ fetch() {
 	tar -xJf "$downloads/$tarball" -C "$dir"
 }
 
-# options <config>: the options set in a config, without the comments
-# and the options the toolchain decides (its version, what it supports).
+# options <config>: the options set in a config, without the comments.
+# That includes the ones the toolchain decides (its version, what it
+# supports), and the ones that depend on them: the config is generated
+# with run.sh's toolchain, which a build with another one doesn't match.
 options() {
-	grep -E '^(CONFIG_|# CONFIG_.* is not set$)' "$1" |
-		grep -vE '^(# )?CONFIG_(CC|GCC|CLANG|AS|LD|LLD|RUSTC|PAHOLE|ARM64_AS)_'
+	grep -E '^(CONFIG_|# CONFIG_.* is not set$)' "$1"
 }
 
 # check_fragment <config>: fails, and prints them, if options the
