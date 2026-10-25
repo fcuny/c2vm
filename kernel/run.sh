@@ -3,7 +3,7 @@
 # Runs a command in the kernel's build environment, e.g. from the top of
 # the repository:
 #
-#   kernel/run.sh kernel/build.sh out
+#   kernel/run.sh kernel/build.sh kernel/out
 #   kernel/run.sh kernel/update.sh 7.3.1
 #
 # The checkout is mounted on /src, and the command runs from the same
