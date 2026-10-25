@@ -3,3 +3,4 @@
 /c2vm-init
 /kernel/out/
 /kernel/downloads/
+__pycache__/

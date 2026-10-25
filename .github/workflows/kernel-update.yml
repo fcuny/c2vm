@@ -50,55 +50,24 @@ jobs:
           ref: main
           persist-credentials: false
 
+      # bot.py comes from the branch this runs from, like this file, so
+      # that running it on a branch tries that branch's. It acts on main's
+      # checkout, above, which doesn't commit .bot.
+      - name: Check out bot.py
+        uses: actions/checkout@v7
+        with:
+          path: .bot
+          sparse-checkout: |
+            kernel/bot.py
+            kernel/series.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - name: Check the version
         id: check
         env:
           GH_TOKEN: ${{ secrets.KERNEL_BOT_TOKEN }}
-        run: |
-          VERSION=$REQUESTED
-          if [[ -z $VERSION ]]; then
-            if ! releases=$(curl -fsSL --retry 3 https://www.kernel.org/releases.json); then
-              echo "can't get kernel.org's releases" >&2
-              exit 1
-            fi
-            VERSION=$(jq -r .latest_stable.version <<< "$releases")
-            echo "kernel.org's latest stable release is $VERSION"
-          fi
-          if [[ ! $VERSION =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
-            echo "not a kernel release: $VERSION" >&2
-            exit 1
-          fi
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          branch=kernel/$VERSION
-          echo "branch=$branch" >> "$GITHUB_OUTPUT"
-          current=$(cat kernel/VERSION)
-          echo "current=$current" >> "$GITHUB_OUTPUT"
-
-          # A release asked for by hand goes ahead, even an older one, to
-          # roll back, unless it's the current one or has an open PR: then
-          # the run fails. Every day, only a newer release does, and not
-          # one whose PR was closed: closing it is how to skip a release.
-          prs=$(gh pr list --head "$branch" --state all --json state --jq '.[].state')
-          reason=
-          if [[ $VERSION == "$current" ]]; then
-            reason="already on $VERSION"
-          elif grep -qx OPEN <<< "$prs"; then
-            reason="there's already a PR for $VERSION"
-          elif [[ -z $REQUESTED ]]; then
-            if [[ $(printf '%s\n' "$current" "$VERSION" | sort -V | tail -n 1) == "$current" ]]; then
-              reason="already on $current, which is newer than $VERSION"
-            elif grep -qx CLOSED <<< "$prs"; then
-              reason="the PR for $VERSION was closed: skipping it"
-            fi
-          fi
-          if [[ -n $reason ]]; then
-            if [[ -n $REQUESTED ]]; then
-              echo "$reason" >&2
-              exit 1
-            fi
-            echo "$reason"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          fi
+        run: python3 .bot/kernel/bot.py update-check "$REQUESTED"
 
       # The changes go in the checkout, which is all run.sh's container
       # sees; only kernel/ is committed.
@@ -110,66 +79,5 @@ jobs:
         if: steps.check.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.KERNEL_BOT_TOKEN }}
-          BRANCH: ${{ steps.check.outputs.branch }}
           CURRENT: ${{ steps.check.outputs.current }}
-        run: |
-          gh auth setup-git
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git switch -c "$BRANCH"
-          git add -A kernel
-          git commit -m "kernel: move to $VERSION"
-          git push --force origin "$BRANCH"
-
-          series=$(kernel/series.sh "$VERSION")
-          {
-            # Tells this workflow's PRs from others, which it doesn't
-            # close.
-            echo '<!-- kernel-update -->'
-            echo "Moves the guest kernel from $CURRENT to $VERSION, with \`kernel/update.sh\`."
-            echo
-            echo "Before merging, test the kernel with \`kernel/test/pr.py\` and this PR's number."
-            if [[ $series != $(kernel/series.sh "$CURRENT") ]]; then
-              echo
-              echo "This is a new series: once it's published, the kernel workflow opens a PR that makes \`:$series\` c2vm's default kernel."
-            fi
-            echo
-            if [[ -s changes.txt ]]; then
-              echo '<details><summary>Config changes</summary>'
-              echo
-              echo '```'
-              # A PR description is at most 65536 characters: past that,
-              # cut at the end of a line.
-              if [[ $(wc -c < changes.txt) -le 60000 ]]; then
-                cat changes.txt
-                echo '```'
-              else
-                head -c 60000 changes.txt | sed '$d'
-                echo '```'
-                echo
-                echo "Truncated: the workflow's log has all of them."
-              fi
-              echo
-              echo '</details>'
-            else
-              echo 'No config changes.'
-            fi
-          } > "$RUNNER_TEMP/body"
-          gh pr create --draft --base main --head "$BRANCH" \
-            --title "kernel: move to $VERSION" --body-file "$RUNNER_TEMP/body"
-
-          # This supersedes the open PRs this workflow opened for older
-          # releases, not others, like a kernel/7.3.5 someone opened to
-          # stay on 7.3.
-          gh pr list --state open --limit 200 --json number,headRefName,body \
-            --jq '.[] | select(.body | contains("<!-- kernel-update -->")) | "\(.number) \(.headRefName)"' \
-            > "$RUNNER_TEMP/prs"
-          while read -r pr head; do
-            release=${head#kernel/}
-            if [[ $head != kernel/* || ! $release =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ || $release == "$VERSION" ]]; then
-              continue
-            fi
-            if [[ $(printf '%s\n' "$release" "$VERSION" | sort -V | tail -n 1) == "$VERSION" ]]; then
-              gh pr close "$pr" --delete-branch --comment "Superseded by $VERSION."
-            fi
-          done < "$RUNNER_TEMP/prs"
+        run: python3 .bot/kernel/bot.py update-pr "$CURRENT" changes.txt

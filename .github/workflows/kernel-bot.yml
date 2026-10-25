@@ -1,0 +1,31 @@
+name: kernel-bot
+
+# Tests kernel/bot.py, which the kernel and kernel-update workflows run.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - kernel/bot*.py
+      - kernel/series.sh
+      - .github/workflows/kernel-bot.yml
+  pull_request:
+    paths:
+      - kernel/bot*.py
+      - kernel/series.sh
+      - .github/workflows/kernel-bot.yml
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Test
+        run: python3 kernel/bot_test.py
