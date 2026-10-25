@@ -131,7 +131,7 @@ jobs:
             echo "Before merging, boot the kernel from this PR's \`kernel\` artifact (see \`kernel/README.md\`)."
             if [[ $series != $(kernel/series.sh "$CURRENT") ]]; then
               echo
-              echo "This is a new series: once it's published, move the default kernel in \`cmd/c2vm/kernel.go\` to \`:$series\`."
+              echo "This is a new series: once it's published, the kernel workflow opens a PR that makes \`:$series\` c2vm's default kernel."
             fi
             echo
             if [[ -s changes.txt ]]; then
