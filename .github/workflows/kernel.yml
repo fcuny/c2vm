@@ -87,3 +87,47 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.description=Linux ${{ steps.version.outputs.version }} guest kernel for c2vm
             org.opencontainers.image.licenses=GPL-2.0-only
+
+  # After a new series is published, opens a draft PR that makes it c2vm's
+  # default kernel. It uses KERNEL_BOT_TOKEN, like the kernel-update
+  # workflow, so that the PR's checks run.
+  default:
+    name: Default kernel
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ secrets.KERNEL_BOT_TOKEN }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.KERNEL_BOT_TOKEN }}
+
+      - name: Open a PR
+        run: |
+          series=$(cut -d. -f1-2 < kernel/VERSION)
+          current=$(grep -o 'c2vm-kernel:[0-9.]*' cmd/c2vm/kernel.go | cut -d: -f2)
+          if [[ $series == "$current" ]]; then
+            echo "the default kernel is already :$series"
+            exit 0
+          fi
+          branch=c2vm/default-kernel-$series
+          if [[ -n $(gh pr list --head "$branch" --state open --json number --jq '.[]') ]]; then
+            echo "there's already a PR for :$series"
+            exit 0
+          fi
+
+          # The tag, not a longer one that starts with it (e.g. 7.2.9).
+          sed -i "s/c2vm-kernel:${current//./\\.}\([^0-9.]\)/c2vm-kernel:$series\1/g" \
+            cmd/c2vm/kernel.go README.md kernel/README.md
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c "$branch"
+          git commit -am "c2vm: boot $series kernels by default"
+          git push --force origin "$branch"
+          gh pr create --draft --base main --head "$branch" \
+            --title "c2vm: boot $series kernels by default" \
+            --body "Moves the default kernel from \`:$current\` to \`:$series\`, which the kernel workflow just published. Before merging, run \`make e2e\`."

@@ -92,7 +92,7 @@ At boot, `c2vm-init` runs from an initramfs: it mounts the image with a writable
 
 ### Kernel
 
-`c2vm boot` pulls a 7.2 kernel, built from the configuration Firecracker uses for its microVMs, from `ghcr.io/fcuny/c2vm-kernel:7.2` (for arm64, with the kernel in `/boot/kernel`), and caches it. `-kernel` takes another image, or a kernel file. To extract the kernel yourself:
+`c2vm boot` pulls a kernel of the latest stable series, built with [a minimal config for microVMs](kernel/), from `ghcr.io/fcuny/c2vm-kernel:7.2` (for arm64, with the kernel in `/boot/kernel`), and caches it. `-kernel` takes another image, or a kernel file. To extract the kernel yourself:
 
 ```sh
 crane export ghcr.io/fcuny/c2vm-kernel:7.2 - | tar -x boot/kernel
