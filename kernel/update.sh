@@ -32,7 +32,12 @@ src=$work/linux-$version
 cp "$old" "$src/.config"
 (cd "$src" && ./scripts/kconfig/merge_config.sh -m .config "$fragment")
 make -C "$src" "${make_args[@]}" olddefconfig
-check_fragment "$src/.config"
+# Kconfig only warns when an option can't be set, e.g. a dependency is
+# missing.
+if ! check_fragment "$src/.config"; then
+	echo "Kconfig couldn't set them for $version" >&2
+	exit 1
+fi
 
 "$src/scripts/diffconfig" "$old" "$src/.config" > "$work/diff"
 if [[ $new != "$old" ]]; then

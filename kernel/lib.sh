@@ -35,16 +35,17 @@ options() {
 		grep -vE '^(# )?CONFIG_(CC|GCC|CLANG|AS|LD|LLD|RUSTC|PAHOLE|ARM64_AS)_'
 }
 
-# check_fragment <config>: fails if a line of the fragment isn't in the
-# config. Kconfig only warns when an option can't be set, e.g. a
-# dependency is missing.
+# check_fragment <config>: fails, and prints them, if options the
+# fragment sets aren't set that way in the config: its CONFIG_X=... and
+# "# CONFIG_X is not set" lines, without trailing whitespace.
 check_fragment() {
-	local line missing=0
-	while IFS= read -r line; do
-		if ! grep -qxF "$line" "$1"; then
-			echo "not in the config: $line" >&2
-			missing=1
-		fi
-	done < <(grep -E '^(CONFIG_|# CONFIG_)' "$fragment")
-	return "$missing"
+	local missing
+	missing=$(sed 's/[[:space:]]*$//' "$fragment" |
+		grep -E '^(CONFIG_[A-Za-z0-9_]+=|# CONFIG_[A-Za-z0-9_]+ is not set$)' |
+		grep -vxF -f "$1") || true
+	if [[ -n $missing ]]; then
+		echo "not in $1 as c2vm.fragment sets them:" >&2
+		echo "$missing" >&2
+		return 1
+	fi
 }

@@ -24,6 +24,12 @@ if [[ ! -f $config ]]; then
 	echo "no config for $series: run kernel/update.sh $version" >&2
 	exit 1
 fi
+# olddefconfig must leave the config as it is (see below), so checking it
+# now is enough, and fails before the download.
+if ! check_fragment "$config"; then
+	echo "run kernel/update.sh $version to merge the fragment in" >&2
+	exit 1
+fi
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -41,7 +47,6 @@ if ! diff -u <(options "$config") <(options "$src/.config") >&2; then
 	echo "olddefconfig changed $config: run kernel/update.sh $version" >&2
 	exit 1
 fi
-check_fragment "$src/.config"
 
 make -C "$src" "${make_args[@]}" -j"$(nproc)" Image
 
