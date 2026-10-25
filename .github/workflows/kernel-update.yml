@@ -18,10 +18,12 @@ on:
         description: "Kernel release, e.g. 7.3.1 (default: kernel.org's latest stable)"
         required: false
 
-# One run at a time. A run started while another one waits replaces it,
-# which loses nothing: the newest release supersedes the older ones.
+# One run at a time for each trigger. A run started while another one
+# waits replaces it, which loses nothing: the newest release supersedes
+# the older ones. A daily run doesn't replace one started by hand, which
+# may be for an older release.
 concurrency:
-  group: kernel-update
+  group: kernel-update-${{ github.event_name }}
 
 permissions:
   contents: read
@@ -55,7 +57,11 @@ jobs:
         run: |
           VERSION=$REQUESTED
           if [[ -z $VERSION ]]; then
-            VERSION=$(curl -fsSL https://www.kernel.org/releases.json | jq -r .latest_stable.version)
+            if ! releases=$(curl -fsSL --retry 3 https://www.kernel.org/releases.json); then
+              echo "can't get kernel.org's releases" >&2
+              exit 1
+            fi
+            VERSION=$(jq -r .latest_stable.version <<< "$releases")
             echo "kernel.org's latest stable release is $VERSION"
           fi
           if [[ ! $VERSION =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
@@ -67,11 +73,30 @@ jobs:
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
           current=$(cat kernel/VERSION)
           echo "current=$current" >> "$GITHUB_OUTPUT"
-          if [[ $(printf '%s\n' "$current" "$VERSION" | sort -V | tail -n 1) == "$current" ]]; then
-            echo "already on $current, which is $VERSION or newer"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          elif [[ -n $(gh pr list --head "$branch" --state open --json number --jq '.[]') ]]; then
-            echo "there's already a PR for $VERSION"
+
+          # A release asked for by hand goes ahead, even an older one, to
+          # roll back, unless it's the current one or has an open PR: then
+          # the run fails. Every day, only a newer release does, and not
+          # one whose PR was closed: closing it is how to skip a release.
+          prs=$(gh pr list --head "$branch" --state all --json state --jq '.[].state')
+          reason=
+          if [[ $VERSION == "$current" ]]; then
+            reason="already on $VERSION"
+          elif grep -qx OPEN <<< "$prs"; then
+            reason="there's already a PR for $VERSION"
+          elif [[ -z $REQUESTED ]]; then
+            if [[ $(printf '%s\n' "$current" "$VERSION" | sort -V | tail -n 1) == "$current" ]]; then
+              reason="already on $current, which is newer than $VERSION"
+            elif grep -qx CLOSED <<< "$prs"; then
+              reason="the PR for $VERSION was closed: skipping it"
+            fi
+          fi
+          if [[ -n $reason ]]; then
+            if [[ -n $REQUESTED ]]; then
+              echo "$reason" >&2
+              exit 1
+            fi
+            echo "$reason"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -98,6 +123,9 @@ jobs:
 
           series=$(kernel/series.sh "$VERSION")
           {
+            # Tells this workflow's PRs from others, which it doesn't
+            # close.
+            echo '<!-- kernel-update -->'
             echo "Moves the guest kernel from $CURRENT to $VERSION, with \`kernel/update.sh\`."
             echo
             echo "Before merging, boot the kernel from this PR's \`kernel\` artifact (see \`kernel/README.md\`)."
@@ -130,11 +158,12 @@ jobs:
           gh pr create --draft --base main --head "$BRANCH" \
             --title "kernel: move to $VERSION" --body-file "$RUNNER_TEMP/body"
 
-          # This supersedes the open PRs for older releases: the ones on
-          # kernel/<release> branches, which this workflow names, and not
-          # others, like a kernel/fix-something someone pushed.
-          gh pr list --state open --limit 200 --json number,headRefName \
-            --jq '.[] | "\(.number) \(.headRefName)"' > "$RUNNER_TEMP/prs"
+          # This supersedes the open PRs this workflow opened for older
+          # releases, not others, like a kernel/7.3.5 someone opened to
+          # stay on 7.3.
+          gh pr list --state open --limit 200 --json number,headRefName,body \
+            --jq '.[] | select(.body | contains("<!-- kernel-update -->")) | "\(.number) \(.headRefName)"' \
+            > "$RUNNER_TEMP/prs"
           while read -r pr head; do
             release=${head#kernel/}
             if [[ $head != kernel/* || ! $release =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ || $release == "$VERSION" ]]; then
