@@ -1,5 +1,6 @@
-# What c2vm needs from the kernel. build.sh fails if a line here isn't
-# in the final config.
+# What c2vm needs from the kernel. update.sh merges it into the configs
+# it generates, and build.sh fails if a line here isn't in the final
+# config.
 
 # Virtualization.framework's devices are on PCI.
 CONFIG_VIRTIO_PCI=y

@@ -30,6 +30,13 @@ jobs:
       - name: Build
         run: kernel/build.sh out
 
+      # Nothing else runs update.sh until there's a new release. On the
+      # current one, it should regenerate the same config.
+      - name: Check update.sh
+        run: |
+          kernel/update.sh "$(cat kernel/VERSION)"
+          git diff --stat
+
       - name: Upload
         uses: actions/upload-artifact@v7
         with:
@@ -58,9 +65,8 @@ jobs:
       - name: Compute tags
         id: version
         run: |
-          version=$(cat kernel/VERSION)
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "series=$(cut -d. -f1-2 <<< "$version")" >> "$GITHUB_OUTPUT"
+          echo "version=$(cat kernel/VERSION)" >> "$GITHUB_OUTPUT"
+          echo "series=$(kernel/series.sh)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
