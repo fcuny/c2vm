@@ -1,7 +1,30 @@
-# Additions on top of Firecracker's configs, applied with merge_config.sh.
+# What c2vm needs from the kernel. build.sh fails if a line here isn't
+# in the final config.
 
+# Virtualization.framework's devices are on PCI.
+CONFIG_VIRTIO_PCI=y
+CONFIG_VIRTIO_BLK=y
+CONFIG_VIRTIO_NET=y
+# hvc0
+CONFIG_VIRTIO_CONSOLE=y
 # virtiofs, to share directories with the VM.
 CONFIG_VIRTIO_FS=y
+CONFIG_HW_RANDOM_VIRTIO=y
+
+# c2vm-init runs from an initramfs, and puts a writable layer over the
+# image.
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_OVERLAY_FS=y
+CONFIG_EXT4_FS=y
+CONFIG_TMPFS=y
+CONFIG_DEVTMPFS=y
+CONFIG_PROC_FS=y
+CONFIG_SYSFS=y
+CONFIG_UNIX98_PTYS=y
+
+# ip=dhcp on the command line.
+CONFIG_IP_PNP=y
+CONFIG_IP_PNP_DHCP=y
 
 # Shows up in `uname -r`, to tell our builds apart.
 CONFIG_LOCALVERSION="-c2vm"

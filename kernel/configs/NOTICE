@@ -1,0 +1,6 @@
+The configs here started from Firecracker's CI guest config for 6.18:
+
+https://github.com/firecracker-microvm/firecracker/blob/v1.17.0/resources/guest_configs/microvm-kernel-ci-aarch64-6.18.config
+
+Copyright Amazon.com, Inc. or its affiliates. Licensed under the Apache
+License, Version 2.0.
