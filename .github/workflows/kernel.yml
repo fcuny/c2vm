@@ -107,8 +107,7 @@ jobs:
 
       - name: Open a PR
         run: |
-          source kernel/lib.sh
-          series=$(series_of "$(cat kernel/VERSION)")
+          series=$(kernel/series.sh)
           current=$(grep -o 'c2vm-kernel:[0-9.]*' cmd/c2vm/kernel.go | cut -d: -f2)
           if [[ $series == "$current" ]]; then
             echo "the default kernel is already :$series"
