@@ -107,7 +107,7 @@ podman export c2vm-kernel | tar -x boot/kernel
 podman rm c2vm-kernel
 ```
 
-The kernel is built by a GitHub Actions workflow; to build it yourself, run `kernel/run.sh kernel/build.sh out`, which uses c2vm on macOS and docker elsewhere. See [`kernel/`](kernel/).
+The kernel is built by a GitHub Actions workflow; to build it yourself, run `kernel/run.sh kernel/build.sh kernel/out`, which uses c2vm on macOS and docker elsewhere. See [`kernel/`](kernel/).
 
 ### Signing
 
