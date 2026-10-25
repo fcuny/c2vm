@@ -19,7 +19,9 @@ The [kernel workflow](../.github/workflows/kernel.yml) builds it on each change 
 
 The config enables virtio over PCI, which Virtualization.framework uses, and builds everything in: there are no modules to ship.
 
-We follow the latest stable series. To move to a new release, run the [kernel-update workflow](../.github/workflows/kernel-update.yml) with it: it runs `update.sh` and opens a draft PR, with the config changes in its description. Review them, and boot the kernel from the PR's `kernel` artifact before merging. For a new series, once its kernel is published, also update the default kernel in `cmd/c2vm/kernel.go` (and the examples below) to the new tag. Options c2vm needs go in `configs/c2vm.fragment`.
+We follow the latest stable series. The [kernel-update workflow](../.github/workflows/kernel-update.yml) checks kernel.org's latest stable release every day, and when it's newer than `VERSION`, runs `update.sh` with it and opens a draft PR, with the config changes in its description; it can also be run by hand with a release. Review them, and boot the kernel from the PR's `kernel` artifact before merging. For a new series, once its kernel is published, also update the default kernel in `cmd/c2vm/kernel.go` (and the examples below) to the new tag. Options c2vm needs go in `configs/c2vm.fragment`.
+
+To skip a release, close its PR: the daily check won't open it again. Run by hand, the workflow goes ahead with any release other than the current one, e.g. to roll back, and fails when there's nothing to do. GitHub disables scheduled workflows after 60 days without activity in the repository: then there are no more PRs until it's enabled again, from the Actions tab.
 
 ## Testing a kernel
 
