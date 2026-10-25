@@ -30,6 +30,13 @@ jobs:
       - name: Build
         run: kernel/build.sh out
 
+      # Nothing else runs update.sh until there's a new release. On the
+      # current one, it should regenerate the same config.
+      - name: Check update.sh
+        run: |
+          kernel/update.sh "$(cat kernel/VERSION)"
+          git diff --stat
+
       - name: Upload
         uses: actions/upload-artifact@v7
         with:

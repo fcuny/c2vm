@@ -6,12 +6,13 @@ The kernel c2vm boots with Apple's Virtualization.framework, for arm64.
 - `configs/<series>/aarch64.config`: the full config for the series of `VERSION` (e.g. `7.2`), the one we ship. It started from Firecracker's CI guest config for 6.18 (see `configs/NOTICE`), a minimal config for microVMs that also works with Virtualization.framework.
 - `configs/c2vm.fragment`: the options c2vm needs.
 - `build.sh`: downloads the release from kernel.org, checks its checksum, and builds it with the series' config. It fails if `make olddefconfig` would change the config (other than for what the toolchain decides), or if an option from the fragment isn't in it.
+- `update.sh <version>`: moves to a new release. It updates `VERSION` and regenerates the config from the current one, merging in the fragment and giving new options their default value, then prints what changed in the config. Like `build.sh`, it needs Linux.
 
 The [kernel workflow](../.github/workflows/kernel.yml) builds it on each change and, on `main`, publishes it as `ghcr.io/fcuny/c2vm-kernel:<major.minor>` and `:<version>`. It's built on an arm64 runner.
 
 The config enables virtio over PCI, which Virtualization.framework uses, and builds everything in: there are no modules to ship.
 
-We follow the latest stable series. To move to a new patch release, update `VERSION`; if `build.sh` says the config changed, regenerate it. To move to a new series, add its config in `configs/<series>/` (and remove the old one), and once it's published, update the default kernel in `cmd/c2vm/kernel.go` (and the examples below) to the new tag. Options c2vm needs go in `configs/c2vm.fragment`.
+We follow the latest stable series. To move to a new release, run `update.sh` with it, and review the config changes it prints. For a new series, once its kernel is published, also update the default kernel in `cmd/c2vm/kernel.go` (and the examples below) to the new tag. Options c2vm needs go in `configs/c2vm.fragment`.
 
 ## Testing a kernel
 
