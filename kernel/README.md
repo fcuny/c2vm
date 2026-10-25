@@ -19,13 +19,19 @@ The [kernel workflow](../.github/workflows/kernel.yml) builds it on each change 
 
 The config enables virtio over PCI, which Virtualization.framework uses, and builds everything in: there are no modules to ship.
 
-We follow the latest stable series. The [kernel-update workflow](../.github/workflows/kernel-update.yml) checks kernel.org's latest stable release every day, and when it's newer than `VERSION`, runs `update.sh` with it and opens a draft PR, with the config changes in its description; it can also be run by hand with a release. Review the config changes, and boot the kernel from the PR's `kernel` artifact before merging. When the kernel workflow publishes a new series, it opens another draft PR, which moves the default kernel in `cmd/c2vm/kernel.go` (and the examples) to the new tag; run `make e2e` before merging it. Options c2vm needs go in `configs/c2vm.fragment`.
+We follow the latest stable series. The [kernel-update workflow](../.github/workflows/kernel-update.yml) checks kernel.org's latest stable release every day, and when it's newer than `VERSION`, runs `update.sh` with it and opens a draft PR, with the config changes in its description; it can also be run by hand with a release. Review the config changes, and test the kernel with `test/pr.py` before merging (see below). When the kernel workflow publishes a new series, it opens another draft PR, which moves the default kernel in `cmd/c2vm/kernel.go` (and the examples) to the new tag; run `make e2e` before merging it. Options c2vm needs go in `configs/c2vm.fragment`.
 
 To skip a release, close its PR: the daily check won't open it again. Run by hand, the workflow goes ahead with any release other than the current one, e.g. to roll back, and fails when there's nothing to do. GitHub disables scheduled workflows after 60 days without activity in the repository: then there are no more PRs until it's enabled again, from the Actions tab.
 
 ## Testing a kernel
 
-`test/` boots a kernel with a minimal Alpine root filesystem whose init reports what the kernel found, then reboots:
+`test/pr.py <PR>` tests the kernel a PR builds: it downloads the kernel workflow's artifact for the PR's head, boots it with c2vm, built from the checkout, to check what c2vm needs (the network, the overlay, `-v` mounts, the CPUs, the random device, dmesg), and runs `make e2e` with it. It prints a report, and asks before posting it on the PR. It runs with [uv](https://docs.astral.sh/uv/), on macOS on Apple silicon:
+
+```sh
+kernel/test/pr.py 66
+```
+
+Without c2vm, `make-rootfs.sh` and `boot-vz.sh` boot a kernel with vfkit and a minimal Alpine root filesystem whose init reports what the kernel found, then reboots:
 
 ```sh
 # Extract the kernel for the host's architecture, with crane...

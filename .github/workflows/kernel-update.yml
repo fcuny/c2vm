@@ -128,7 +128,7 @@ jobs:
             echo '<!-- kernel-update -->'
             echo "Moves the guest kernel from $CURRENT to $VERSION, with \`kernel/update.sh\`."
             echo
-            echo "Before merging, boot the kernel from this PR's \`kernel\` artifact (see \`kernel/README.md\`)."
+            echo "Before merging, test the kernel with \`kernel/test/pr.py\` and this PR's number."
             if [[ $series != $(kernel/series.sh "$CURRENT") ]]; then
               echo
               echo "This is a new series: once it's published, the kernel workflow opens a PR that makes \`:$series\` c2vm's default kernel."
