@@ -9,11 +9,14 @@ on:
     paths:
       - kernel/bot*.py
       - kernel/series.sh
+      # bot_test.py checks bot.py can find the default kernel in it.
+      - cmd/c2vm/kernel.go
       - .github/workflows/kernel-bot.yml
   pull_request:
     paths:
       - kernel/bot*.py
       - kernel/series.sh
+      - cmd/c2vm/kernel.go
       - .github/workflows/kernel-bot.yml
 
 permissions:

@@ -78,21 +78,32 @@ class Default(unittest.TestCase):
         self.assertIsNone(bot.default_tag('const defaultKernel = "ghcr.io/fcuny/c2vm-kernel:7.3.1"\n'))
 
     def test_tag_in_repo(self):
-        kernel_go = (Path(bot.here).parent / bot.default_files[0]).read_text()
-        self.assertIsNotNone(bot.default_tag(kernel_go))
+        text = (Path(bot.here).parent / bot.kernel_go).read_text()
+        self.assertIsNotNone(bot.default_tag(text))
+
+    def test_newer(self):
+        cases = [
+            ("7.2", "7.3", None),
+            ("7.9", "7.10", None),
+            ("7.3", "7.3", "the default kernel is :7.3, which is :7.3 or newer"),
+            ("7.4", "7.3", "the default kernel is :7.4, which is :7.3 or newer"),
+        ]
+        for current, target, want in cases:
+            with self.subTest(current=current, target=target):
+                self.assertEqual(bot.default_newer(current, target), want)
 
     def test_skip(self):
         cases = [
-            ("7.2", "7.3", [], None),
-            ("7.9", "7.10", ["MERGED"], None),
-            ("7.3", "7.3", [], "the default kernel is :7.3, which is :7.3 or newer"),
-            ("7.4", "7.3", [], "the default kernel is :7.4, which is :7.3 or newer"),
-            ("7.2", "7.3", ["OPEN"], "there's already a PR for :7.3"),
-            ("7.2", "7.3", ["CLOSED"], "the PR for :7.3 was closed: staying on :7.2"),
+            ([], None),
+            (["MERGED"], None),
+            # Closed for a newer series that was then rolled back.
+            (["SUPERSEDED"], None),
+            (["OPEN"], "there's already a PR for :7.3"),
+            (["CLOSED"], "the PR for :7.3 was closed: staying on :7.2"),
         ]
-        for current, series, states, want in cases:
-            with self.subTest(current=current, series=series, states=states):
-                self.assertEqual(bot.default_skip(current, series, states), want)
+        for states, want in cases:
+            with self.subTest(states=states):
+                self.assertEqual(bot.default_skip("7.2", "7.3", states), want)
 
     def test_retag(self):
         cases = [
@@ -104,6 +115,9 @@ class Default(unittest.TestCase):
             ("longer tag: c2vm-kernel:7.2.9 stays", "longer tag: c2vm-kernel:7.2.9 stays"),
             ("longer series: c2vm-kernel:7.20 stays", "longer series: c2vm-kernel:7.20 stays"),
             ("other dots: c2vm-kernel:752 stays", "other dots: c2vm-kernel:752 stays"),
+            # As the sed this replaced: two dots aren't the end of a tag.
+            ("c2vm-kernel:7.2.. stays", "c2vm-kernel:7.2.. stays"),
+            ("two lines: c2vm-kernel:7.2\nc2vm-kernel:7.2\n", "two lines: c2vm-kernel:7.3\nc2vm-kernel:7.3\n"),
         ]
         for text, want in cases:
             with self.subTest(text=text):
@@ -118,8 +132,10 @@ class Superseded(unittest.TestCase):
             {"number": 2, "headRefName": "c2vm/default-kernel-7.3", "body": marker},
             {"number": 3, "headRefName": "c2vm/default-kernel-7.1", "body": "by hand"},
             {"number": 4, "headRefName": "kernel/7.1", "body": marker},
+            # Not a series: someone pinning a release.
+            {"number": 5, "headRefName": "c2vm/default-kernel-7.2.9", "body": marker},
         ]
-        self.assertEqual(bot.superseded(prs, marker, "c2vm/default-kernel-", "7.3"), [1])
+        self.assertEqual(bot.superseded(prs, marker, "c2vm/default-kernel-", bot.series_re, "7.3"), [1])
 
     def test_update(self):
         marker = bot.update_marker
@@ -133,7 +149,22 @@ class Superseded(unittest.TestCase):
             {"number": 6, "headRefName": "c2vm/default-kernel-7.2", "body": marker},
             {"number": 7, "headRefName": "kernel/7.4", "body": marker},
         ]
-        self.assertEqual(bot.superseded(prs, marker, "kernel/", "7.3.2"), [1, 3])
+        self.assertEqual(bot.superseded(prs, marker, "kernel/", bot.release_re, "7.3.2"), [1, 3])
+
+
+class State(unittest.TestCase):
+    def test_state(self):
+        bot_comment = {"body": bot.superseded_by + ":7.4."}
+        cases = [
+            ({"state": "OPEN", "comments": []}, "OPEN"),
+            ({"state": "MERGED", "comments": []}, "MERGED"),
+            ({"state": "CLOSED", "comments": []}, "CLOSED"),
+            ({"state": "CLOSED", "comments": [{"body": "not now"}]}, "CLOSED"),
+            ({"state": "CLOSED", "comments": [{"body": "not now"}, bot_comment]}, "SUPERSEDED"),
+        ]
+        for pr, want in cases:
+            with self.subTest(pr=pr):
+                self.assertEqual(bot.state(pr), want)
 
 
 if __name__ == "__main__":
