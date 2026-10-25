@@ -71,7 +71,56 @@ class UpdateBody(unittest.TestCase):
         self.assertTrue(all(l == line.strip() for l in block.splitlines()))
 
 
+class Default(unittest.TestCase):
+    def test_tag(self):
+        self.assertEqual(bot.default_tag('const defaultKernel = "ghcr.io/fcuny/c2vm-kernel:7.3"\n'), "7.3")
+        self.assertIsNone(bot.default_tag('const defaultKernel = "ghcr.io/fcuny/c2vm-kernel:latest"\n'))
+        self.assertIsNone(bot.default_tag('const defaultKernel = "ghcr.io/fcuny/c2vm-kernel:7.3.1"\n'))
+
+    def test_tag_in_repo(self):
+        kernel_go = (Path(bot.here).parent / bot.default_files[0]).read_text()
+        self.assertIsNotNone(bot.default_tag(kernel_go))
+
+    def test_skip(self):
+        cases = [
+            ("7.2", "7.3", [], None),
+            ("7.9", "7.10", ["MERGED"], None),
+            ("7.3", "7.3", [], "the default kernel is :7.3, which is :7.3 or newer"),
+            ("7.4", "7.3", [], "the default kernel is :7.4, which is :7.3 or newer"),
+            ("7.2", "7.3", ["OPEN"], "there's already a PR for :7.3"),
+            ("7.2", "7.3", ["CLOSED"], "the PR for :7.3 was closed: staying on :7.2"),
+        ]
+        for current, series, states, want in cases:
+            with self.subTest(current=current, series=series, states=states):
+                self.assertEqual(bot.default_skip(current, series, states), want)
+
+    def test_retag(self):
+        cases = [
+            ('"ghcr.io/fcuny/c2vm-kernel:7.2"', '"ghcr.io/fcuny/c2vm-kernel:7.3"'),
+            ("crane export ghcr.io/fcuny/c2vm-kernel:7.2 - | tar", "crane export ghcr.io/fcuny/c2vm-kernel:7.3 - | tar"),
+            ("at the end: c2vm-kernel:7.2", "at the end: c2vm-kernel:7.3"),
+            ("a sentence ends with c2vm-kernel:7.2. Next", "a sentence ends with c2vm-kernel:7.3. Next"),
+            ("a sentence ends the line: c2vm-kernel:7.2.\n", "a sentence ends the line: c2vm-kernel:7.3.\n"),
+            ("longer tag: c2vm-kernel:7.2.9 stays", "longer tag: c2vm-kernel:7.2.9 stays"),
+            ("longer series: c2vm-kernel:7.20 stays", "longer series: c2vm-kernel:7.20 stays"),
+            ("other dots: c2vm-kernel:752 stays", "other dots: c2vm-kernel:752 stays"),
+        ]
+        for text, want in cases:
+            with self.subTest(text=text):
+                self.assertEqual(bot.retag(text, "7.2", "7.3"), want)
+
+
 class Superseded(unittest.TestCase):
+    def test_default(self):
+        marker = bot.default_marker
+        prs = [
+            {"number": 1, "headRefName": "c2vm/default-kernel-7.2", "body": marker},
+            {"number": 2, "headRefName": "c2vm/default-kernel-7.3", "body": marker},
+            {"number": 3, "headRefName": "c2vm/default-kernel-7.1", "body": "by hand"},
+            {"number": 4, "headRefName": "kernel/7.1", "body": marker},
+        ]
+        self.assertEqual(bot.superseded(prs, marker, "c2vm/default-kernel-", "7.3"), [1])
+
     def test_update(self):
         marker = bot.update_marker
         prs = [

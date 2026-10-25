@@ -8,12 +8,17 @@ decide whether there's something to do, and open the PRs.
 
     kernel/bot.py update-check [<version>]
     kernel/bot.py update-pr <previous version> [<changes file>]
+    kernel/bot.py default
 
 update-check picks the release to move to: <version>, or kernel.org's
 latest stable release. It writes it to $GITHUB_ENV as VERSION, and to
 $GITHUB_OUTPUT the current one as current, and skip=true when there's
 nothing to do. update-pr runs after update.sh: it commits kernel/, pushes
 it, opens the PR, and closes the ones it supersedes.
+
+default runs after VERSION's series is published: if it's newer than
+c2vm's default kernel, it opens a PR that moves the default to it, and
+closes the ones it supersedes.
 
 They run in GitHub Actions, with plain python3 (only the standard
 library), and gh, authenticated with GH_TOKEN. They act on the checkout
@@ -37,8 +42,14 @@ here = Path(__file__).resolve().parent
 
 release_re = re.compile(r"[0-9]+\.[0-9]+(\.[0-9]+)?")
 
-# Tells the PRs update-pr opens from others, which it doesn't close.
+# Tell the PRs update-pr and default open from others, which they don't
+# close.
 update_marker = "<!-- kernel-update -->"
+default_marker = "<!-- kernel-default -->"
+
+# Where default changes the default kernel's tag: cmd/c2vm/kernel.go, and
+# the examples.
+default_files = ["cmd/c2vm/kernel.go", "README.md", "kernel/README.md"]
 
 # A PR description is at most 65536 characters: the config changes are
 # cut, at the end of a line, past this.
@@ -95,6 +106,31 @@ def update_body(current: str, version: str, changes: str) -> str:
         lines += [*changes[:max_changes].split("\n")[:-1], "```", "", "Truncated: the workflow's log has all of them."]
     lines += ["", "</details>"]
     return "\n".join(lines) + "\n"
+
+
+def default_tag(kernel_go: str) -> str | None:
+    """The series of the default kernel, from cmd/c2vm/kernel.go."""
+    m = re.search(r'c2vm-kernel:([0-9]+\.[0-9]+)"', kernel_go)
+    return m[1] if m else None
+
+
+def default_skip(current: str, series: str, states: list[str]) -> str | None:
+    """Why the default kernel doesn't move from :current to :series, if it
+    doesn't, given the states of the PRs for series' branch. As with
+    releases, closing the PR is how to stay on the current one."""
+    if parse(series) <= parse(current):
+        return f"the default kernel is :{current}, which is :{series} or newer"
+    if "OPEN" in states:
+        return f"there's already a PR for :{series}"
+    if "CLOSED" in states:
+        return f"the PR for :{series} was closed: staying on :{current}"
+    return None
+
+
+def retag(text: str, current: str, series: str) -> str:
+    """Moves the c2vm-kernel:current tags in text to series, and not the
+    longer ones that start with it, like :7.2.9 or :7.20 for 7.2."""
+    return re.sub(rf"c2vm-kernel:{re.escape(current)}(?!\.?[0-9])", f"c2vm-kernel:{series}", text)
 
 
 def superseded(prs: list[dict], marker: str, prefix: str, version: str) -> list[int]:
@@ -204,6 +240,34 @@ def update_pr(current: str, changes: Path) -> None:
     close_superseded(update_marker, "kernel/", version, version)
 
 
+def default() -> None:
+    repo = here.parent
+    target = series((here / "VERSION").read_text().strip())
+    current = default_tag((repo / default_files[0]).read_text())
+    if not current:
+        sys.exit(f"can't find the default kernel's tag in {default_files[0]}")
+    branch = f"c2vm/default-kernel-{target}"
+    reason = default_skip(current, target, pr_states(branch))
+    if reason:
+        print(reason)
+        return
+
+    for name in default_files:
+        path = repo / name
+        text = path.read_text()
+        new = retag(text, current, target)
+        if name == default_files[0] and new == text:
+            sys.exit(f"didn't change the default kernel in {name}")
+        path.write_text(new)
+
+    title = f"c2vm: boot {target} kernels by default"
+    push(branch, title, *default_files)
+    body = (f"{default_marker}\nMoves the default kernel from `:{current}` to `:{target}`, "
+            "which the kernel workflow just published. Before merging, run `make e2e`.\n")
+    gh("pr", "create", "--draft", "--base", "main", "--head", branch, "--title", title, "--body", body)
+    close_superseded(default_marker, "c2vm/default-kernel-", target, f":{target}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="The kernel workflows' steps.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -212,12 +276,15 @@ def main() -> None:
     p = sub.add_parser("update-pr")
     p.add_argument("current")
     p.add_argument("changes", nargs="?", type=Path, default=Path("changes.txt"))
+    sub.add_parser("default")
     args = parser.parse_args()
 
     if args.command == "update-check":
         update_check(args.version)
     elif args.command == "update-pr":
         update_pr(args.current, args.changes)
+    elif args.command == "default":
+        default()
 
 
 if __name__ == "__main__":
