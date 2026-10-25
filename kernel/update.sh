@@ -9,7 +9,7 @@
 # gives new options their default value. A new series replaces the old
 # one's config. The changes to the config are printed, to review them.
 #
-# Needs a Linux host, like build.sh.
+# Run it with run.sh, like build.sh.
 
 set -euo pipefail
 
