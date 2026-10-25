@@ -23,6 +23,7 @@ Docker Desktop and `podman machine` run one long-lived Linux VM that all contain
 - **Seeing how an image behaves as a VM**, as fly.io runs them: what it assumes about PID 1, `/dev`, users and its environment when there's no container runtime around it.
 - **Trying a kernel**: `-kernel` boots the same image on a different kernel or configuration.
 - **Building a project from the Mac's checkout on Linux**, with the checkout mounted with `-v`: see [building bootc](docs/examples/build-on-linux.md).
+- **Building with a pinned toolchain**, the same on the Mac as in CI: see [building c2vm's kernel](docs/examples/build-kernel.md).
 
 Some limits to keep in mind:
 
@@ -106,7 +107,7 @@ podman export c2vm-kernel | tar -x boot/kernel
 podman rm c2vm-kernel
 ```
 
-The kernel is built by a GitHub Actions workflow; to build it yourself, run `kernel/run.sh kernel/build.sh out`, which uses c2vm on macOS and docker elsewhere. See [`kernel/`](kernel/).
+The kernel is built by a GitHub Actions workflow; to build it yourself, run `kernel/run.sh kernel/build.sh kernel/out`, which uses c2vm on macOS and docker elsewhere. See [`kernel/`](kernel/).
 
 ### Signing
 
