@@ -16,6 +16,13 @@ out=${1:?usage: build.sh <output dir>}
 here=$(cd "$(dirname "$0")" && pwd)
 version=$(cat "$here/VERSION")
 major=${version%%.*}
+series=$(cut -d. -f1-2 <<< "$version")
+
+config=$here/configs/$series/aarch64.config
+if [[ ! -f $config ]]; then
+	echo "no config for $series: expected $config" >&2
+	exit 1
+fi
 
 make_args=(ARCH=arm64)
 if [[ $(uname -m) != aarch64 ]]; then
@@ -35,37 +42,31 @@ curl -fsSL -o "$work/sha256sums.asc" "$base/sha256sums.asc"
 tar -xJf "$work/$tarball" -C "$work"
 src=$work/linux-$version
 
-cp "$here/configs/aarch64.config" "$src/.config"
-(cd "$src" && ./scripts/kconfig/merge_config.sh -m .config "$here/configs/c2vm.fragment")
+cp "$config" "$src/.config"
 make -C "$src" "${make_args[@]}" olddefconfig
 
-# merge_config.sh and olddefconfig only warn when an option can't be
-# set, e.g. a dependency is missing. Fail instead for the ones we need.
-required=(
-	VIRTIO_PCI      # Virtualization.framework's devices are on PCI
-	VIRTIO_BLK      # the image
-	VIRTIO_NET
-	VIRTIO_CONSOLE  # hvc0
-	VIRTIO_FS
-	HW_RANDOM_VIRTIO
-	BLK_DEV_INITRD  # c2vm-init runs from an initramfs...
-	OVERLAY_FS      # ...and puts a writable layer over the image
-	EXT4_FS
-	TMPFS
-	DEVTMPFS
-	PROC_FS
-	SYSFS
-	UNIX98_PTYS
-	IP_PNP          # ip=dhcp on the command line
-	IP_PNP_DHCP
-)
+# The config is the one we ship, so olddefconfig shouldn't change it. If
+# it does, e.g. a patch release added an option, the config needs to be
+# regenerated. Only the options, not the comments, are compared, and the
+# ones the toolchain decides (its version, what it supports) are left out.
+options() {
+	grep -E '^(CONFIG_|# CONFIG_.* is not set$)' "$1" |
+		grep -vE '^(# )?CONFIG_(CC|GCC|CLANG|AS|LD|LLD|RUSTC|PAHOLE|ARM64_AS)_'
+}
+if ! diff -u <(options "$config") <(options "$src/.config") >&2; then
+	echo "olddefconfig changed $config" >&2
+	exit 1
+fi
+
+# Kconfig only warns when an option can't be set, e.g. a dependency is
+# missing. Fail instead for the ones c2vm needs.
 missing=0
-for opt in "${required[@]}"; do
-	if ! grep -qx "CONFIG_$opt=y" "$src/.config"; then
-		echo "CONFIG_$opt is not built in" >&2
+while IFS= read -r line; do
+	if ! grep -qxF "$line" "$src/.config"; then
+		echo "not in the config: $line" >&2
 		missing=1
 	fi
-done
+done < <(grep -E '^(CONFIG_|# CONFIG_)' "$here/configs/c2vm.fragment")
 if [[ $missing -ne 0 ]]; then
 	exit 1
 fi

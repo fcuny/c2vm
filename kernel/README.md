@@ -3,15 +3,15 @@
 The kernel c2vm boots with Apple's Virtualization.framework, for arm64.
 
 - `VERSION`: the kernel release to build.
-- `configs/aarch64.config`: Firecracker's CI guest config for 6.18, from Firecracker v1.17.0. It's a minimal config for microVMs, with everything built in, that also works with Virtualization.framework. `build.sh` brings it forward to newer kernels with `make olddefconfig`, which gives new options their default value.
-- `configs/c2vm.fragment`: what we add on top.
-- `build.sh`: downloads the release from kernel.org, checks its checksum, applies the configs, and builds it.
+- `configs/<series>/aarch64.config`: the full config for the series of `VERSION` (e.g. `7.2`), the one we ship. It started from Firecracker's CI guest config for 6.18 (see `configs/NOTICE`), a minimal config for microVMs that also works with Virtualization.framework.
+- `configs/c2vm.fragment`: the options c2vm needs.
+- `build.sh`: downloads the release from kernel.org, checks its checksum, and builds it with the series' config. It fails if `make olddefconfig` would change the config (other than for what the toolchain decides), or if an option from the fragment isn't in it.
 
 The [kernel workflow](../.github/workflows/kernel.yml) builds it on each change and, on `main`, publishes it as `ghcr.io/fcuny/c2vm-kernel:<major.minor>` and `:<version>`. It's built on an arm64 runner.
 
 The config enables virtio over PCI, which Virtualization.framework uses, and builds everything in: there are no modules to ship.
 
-We follow the latest stable series. To move to a new patch release, update `VERSION`. To move to a new series, also update the default kernel in `cmd/c2vm/kernel.go` (and the examples above) to the new tag. `build.sh` fails if an option c2vm needs isn't built in anymore; if a new series needs config changes, put them in `configs/c2vm.fragment`.
+We follow the latest stable series. To move to a new patch release, update `VERSION`; if `build.sh` says the config changed, regenerate it. To move to a new series, add its config in `configs/<series>/` (and remove the old one), and once it's published, update the default kernel in `cmd/c2vm/kernel.go` (and the examples below) to the new tag. Options c2vm needs go in `configs/c2vm.fragment`.
 
 ## Testing a kernel
 
