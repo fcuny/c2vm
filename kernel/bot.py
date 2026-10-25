@@ -16,7 +16,9 @@ nothing to do. update-pr runs after update.sh: it commits kernel/, pushes
 it, opens the PR, and closes the ones it supersedes.
 
 They run in GitHub Actions, with plain python3 (only the standard
-library), and gh, authenticated with GH_TOKEN.
+library), and gh, authenticated with GH_TOKEN. They act on the checkout
+they run from, which needn't be the one bot.py comes from: the
+kernel-update workflow runs the bot.py of the branch it runs on, on main.
 """
 
 import argparse
@@ -25,8 +27,10 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
+from functools import cache
 from pathlib import Path
 
 here = Path(__file__).resolve().parent
@@ -46,8 +50,9 @@ def parse(version: str) -> tuple[int, ...]:
 
 
 def series(version: str) -> str:
-    """7.4 for 7.4 and 7.4.1."""
-    return ".".join(version.split(".")[:2])
+    """7.4 for 7.4 and 7.4.1, from series.sh, like the published tags."""
+    return subprocess.run([str(here / "series.sh"), version], check=True, text=True,
+                          stdout=subprocess.PIPE).stdout.strip()
 
 
 def update_skip(current: str, version: str, requested: bool, states: list[str]) -> str | None:
@@ -106,12 +111,19 @@ def superseded(prs: list[dict], marker: str, prefix: str, version: str) -> list[
     return numbers
 
 
+@cache
+def repo() -> Path:
+    """The top of the checkout this runs from."""
+    return Path(subprocess.run(["git", "rev-parse", "--show-toplevel"], check=True, text=True,
+                               stdout=subprocess.PIPE).stdout.strip())
+
+
 def gh(*args: str) -> str:
-    return subprocess.run(["gh", *args], check=True, text=True, stdout=subprocess.PIPE).stdout
+    return subprocess.run(["gh", *args], cwd=repo(), check=True, text=True, stdout=subprocess.PIPE).stdout
 
 
 def git(*args: str) -> None:
-    subprocess.run(["git", *args], check=True)
+    subprocess.run(["git", *args], cwd=repo(), check=True)
 
 
 def pr_states(branch: str) -> list[str]:
@@ -127,9 +139,10 @@ def close_superseded(marker: str, prefix: str, version: str, by: str) -> None:
 
 
 def push(branch: str, message: str, *paths: str) -> None:
-    """Commits paths to a new branch, as github-actions[bot], and pushes
-    it, replacing what's there."""
-    subprocess.run(["gh", "auth", "setup-git"], check=True)
+    """Commits paths, relative to the top of the checkout, to a new
+    branch, as github-actions[bot], and pushes it, replacing what's
+    there."""
+    gh("auth", "setup-git")
     git("config", "user.name", "github-actions[bot]")
     git("config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com")
     git("switch", "-c", branch)
@@ -144,14 +157,17 @@ def set_output(name: str, value: str, var: str = "GITHUB_OUTPUT") -> None:
 
 
 def latest_stable() -> str:
-    for attempt in range(3):
+    attempts = 3
+    for attempt in range(1, attempts + 1):
         try:
             with urllib.request.urlopen("https://www.kernel.org/releases.json", timeout=30) as r:
                 return json.load(r)["latest_stable"]["version"]
-        except OSError as e:
-            error = e
-            time.sleep(5 * (attempt + 1))
-    sys.exit(f"can't get kernel.org's releases: {error}")
+        # The request failing, or what it got not being releases.json.
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            if attempt == attempts:
+                sys.exit(f"can't get kernel.org's latest stable release: {e!r}")
+            time.sleep(5 * attempt)
+    raise AssertionError("unreachable")
 
 
 def update_check(requested: str) -> None:
@@ -161,7 +177,7 @@ def update_check(requested: str) -> None:
         print(f"kernel.org's latest stable release is {version}")
     if not release_re.fullmatch(version):
         sys.exit(f"not a kernel release: {version}")
-    current = (here / "VERSION").read_text().strip()
+    current = (repo() / "kernel" / "VERSION").read_text().strip()
     set_output("VERSION", version, "GITHUB_ENV")
     set_output("current", current)
 
@@ -178,8 +194,12 @@ def update_pr(current: str, changes: Path) -> None:
     branch = f"kernel/{version}"
     push(branch, f"kernel: move to {version}", "kernel")
     body = update_body(current, version, changes.read_text() if changes.exists() else "")
-    gh("pr", "create", "--draft", "--base", "main", "--head", branch,
-       "--title", f"kernel: move to {version}", "--body", body)
+    # From a file: the body can be long for an argument.
+    with tempfile.NamedTemporaryFile("w", suffix=".md") as f:
+        f.write(body)
+        f.flush()
+        gh("pr", "create", "--draft", "--base", "main", "--head", branch,
+           "--title", f"kernel: move to {version}", "--body-file", f.name)
     # Not the PRs others opened, like a kernel/7.3.5 to stay on 7.3.
     close_superseded(update_marker, "kernel/", version, version)
 

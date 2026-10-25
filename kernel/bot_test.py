@@ -1,6 +1,13 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
 """Tests for bot.py's decisions, without gh or git:
 
-    python3 kernel/bot_test.py
+    kernel/bot_test.py
+
+or python3 kernel/bot_test.py, as the kernel-bot workflow runs it.
 """
 
 import sys

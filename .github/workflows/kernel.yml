@@ -6,13 +6,18 @@ on:
       - main
     paths:
       - kernel/**
-      # Not the kernel's: e.g. the default kernel job's PRs change it.
+      # Not the kernel's: e.g. the default kernel job's PRs change the
+      # README. The kernel-bot workflow tests bot.py.
       - '!kernel/README.md'
+      - '!kernel/bot*.py'
+      - '!kernel/test/**'
       - .github/workflows/kernel.yml
   pull_request:
     paths:
       - kernel/**
       - '!kernel/README.md'
+      - '!kernel/bot*.py'
+      - '!kernel/test/**'
       - .github/workflows/kernel.yml
   workflow_dispatch:
 
@@ -23,9 +28,6 @@ jobs:
     steps:
       - name: Check out code
         uses: actions/checkout@v7
-
-      - name: Test bot.py
-        run: python3 kernel/bot_test.py
 
       - name: Build
         run: kernel/run.sh kernel/build.sh out

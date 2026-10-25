@@ -50,11 +50,24 @@ jobs:
           ref: main
           persist-credentials: false
 
+      # bot.py comes from the branch this runs from, like this file, so
+      # that running it on a branch tries that branch's. It acts on main's
+      # checkout, above, which doesn't commit .bot.
+      - name: Check out bot.py
+        uses: actions/checkout@v7
+        with:
+          path: .bot
+          sparse-checkout: |
+            kernel/bot.py
+            kernel/series.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       - name: Check the version
         id: check
         env:
           GH_TOKEN: ${{ secrets.KERNEL_BOT_TOKEN }}
-        run: python3 kernel/bot.py update-check "$REQUESTED"
+        run: python3 .bot/kernel/bot.py update-check "$REQUESTED"
 
       # The changes go in the checkout, which is all run.sh's container
       # sees; only kernel/ is committed.
@@ -67,4 +80,4 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.KERNEL_BOT_TOKEN }}
           CURRENT: ${{ steps.check.outputs.current }}
-        run: python3 kernel/bot.py update-pr "$CURRENT" changes.txt
+        run: python3 .bot/kernel/bot.py update-pr "$CURRENT" changes.txt
