@@ -73,13 +73,12 @@ jobs:
           git commit -m "kernel: move to $VERSION"
           git push --force origin "$BRANCH"
 
-          source kernel/lib.sh
-          series=$(series_of "$VERSION")
+          series=$(kernel/series.sh "$VERSION")
           {
             echo "Moves the guest kernel from $CURRENT to $VERSION, with \`kernel/update.sh\`."
             echo
             echo "Before merging, boot the kernel from this PR's \`kernel\` artifact (see \`kernel/README.md\`)."
-            if [[ $series != $(series_of "$CURRENT") ]]; then
+            if [[ $series != $(kernel/series.sh "$CURRENT") ]]; then
               echo
               echo "This is a new series: once it's published, move the default kernel in \`cmd/c2vm/kernel.go\` to \`:$series\`."
             fi
