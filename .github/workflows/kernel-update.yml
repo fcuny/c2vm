@@ -15,6 +15,8 @@ on:
         description: Kernel release, e.g. 7.3.1
         required: true
 
+# One run at a time. A run started while another one waits replaces it,
+# which loses nothing: the newest release supersedes the older ones.
 concurrency:
   group: kernel-update
 
@@ -26,17 +28,27 @@ jobs:
     name: Update
     # run.sh's container is arm64.
     runs-on: ubuntu-24.04-arm
+    defaults:
+      run:
+        # With pipefail, which the default shell doesn't set.
+        shell: bash
     env:
-      GH_TOKEN: ${{ secrets.KERNEL_BOT_TOKEN }}
       VERSION: ${{ inputs.version }}
     steps:
+      # The PR is against main, so start from it, whichever branch this
+      # runs from. The token isn't kept in .git/config: run.sh mounts the
+      # checkout in its container, where the kernel's scripts run. Only
+      # the steps that need it get it.
       - name: Check out code
         uses: actions/checkout@v7
         with:
-          token: ${{ secrets.KERNEL_BOT_TOKEN }}
+          ref: main
+          persist-credentials: false
 
       - name: Check the version
         id: check
+        env:
+          GH_TOKEN: ${{ secrets.KERNEL_BOT_TOKEN }}
         run: |
           if [[ ! $VERSION =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
             echo "not a kernel release: $VERSION" >&2
@@ -63,9 +75,11 @@ jobs:
       - name: Open a PR
         if: steps.check.outputs.skip != 'true'
         env:
+          GH_TOKEN: ${{ secrets.KERNEL_BOT_TOKEN }}
           BRANCH: ${{ steps.check.outputs.branch }}
           CURRENT: ${{ steps.check.outputs.current }}
         run: |
+          gh auth setup-git
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git switch -c "$BRANCH"
@@ -87,9 +101,17 @@ jobs:
               echo '<details><summary>Config changes</summary>'
               echo
               echo '```'
-              # A PR description is at most 65536 characters.
-              head -c 60000 "changes.txt"
-              echo '```'
+              # A PR description is at most 65536 characters: past that,
+              # cut at the end of a line.
+              if [[ $(wc -c < changes.txt) -le 60000 ]]; then
+                cat changes.txt
+                echo '```'
+              else
+                head -c 60000 changes.txt | sed '$d'
+                echo '```'
+                echo
+                echo "Truncated: the workflow's log has all of them."
+              fi
               echo
               echo '</details>'
             else
@@ -99,9 +121,17 @@ jobs:
           gh pr create --draft --base main --head "$BRANCH" \
             --title "kernel: move to $VERSION" --body-file "$RUNNER_TEMP/body"
 
-          # An open PR for an older release is superseded by this one.
-          gh pr list --state open --json number,headRefName \
-            --jq ".[] | select(.headRefName | startswith(\"kernel/\")) | select(.headRefName != \"$BRANCH\") | .number" |
-            while read -r pr; do
+          # This supersedes the open PRs for older releases: the ones on
+          # kernel/<release> branches, which this workflow names, and not
+          # others, like a kernel/fix-something someone pushed.
+          gh pr list --state open --limit 200 --json number,headRefName \
+            --jq '.[] | "\(.number) \(.headRefName)"' > "$RUNNER_TEMP/prs"
+          while read -r pr head; do
+            release=${head#kernel/}
+            if [[ $head != kernel/* || ! $release =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ || $release == "$VERSION" ]]; then
+              continue
+            fi
+            if [[ $(printf '%s\n' "$release" "$VERSION" | sort -V | tail -n 1) == "$VERSION" ]]; then
               gh pr close "$pr" --delete-branch --comment "Superseded by $VERSION."
-            done
+            fi
+          done < "$RUNNER_TEMP/prs"
