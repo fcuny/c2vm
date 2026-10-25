@@ -241,9 +241,9 @@ def update_pr(current: str, changes: Path) -> None:
 
 
 def default() -> None:
-    repo = here.parent
-    target = series((here / "VERSION").read_text().strip())
-    current = default_tag((repo / default_files[0]).read_text())
+    top = repo()
+    target = series((top / "kernel" / "VERSION").read_text().strip())
+    current = default_tag((top / default_files[0]).read_text())
     if not current:
         sys.exit(f"can't find the default kernel's tag in {default_files[0]}")
     branch = f"c2vm/default-kernel-{target}"
@@ -253,7 +253,7 @@ def default() -> None:
         return
 
     for name in default_files:
-        path = repo / name
+        path = top / name
         text = path.read_text()
         new = retag(text, current, target)
         if name == default_files[0] and new == text:
