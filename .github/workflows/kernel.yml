@@ -24,6 +24,9 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v7
 
+      - name: Test bot.py
+        run: python3 kernel/bot_test.py
+
       - name: Build
         run: kernel/run.sh kernel/build.sh out
 
