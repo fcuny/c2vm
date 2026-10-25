@@ -1,0 +1,107 @@
+name: kernel-update
+
+# Opens a draft PR that moves the guest kernel to a new release, with
+# kernel/update.sh.
+#
+# It pushes and opens the PR with KERNEL_BOT_TOKEN, a fine-grained token
+# for this repository with read and write access to contents and pull
+# requests: what GITHUB_TOKEN pushes doesn't trigger workflows, and the
+# PR needs the kernel workflow to build it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Kernel release, e.g. 7.3.1
+        required: true
+
+concurrency:
+  group: kernel-update
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    name: Update
+    # run.sh's container is arm64.
+    runs-on: ubuntu-24.04-arm
+    env:
+      GH_TOKEN: ${{ secrets.KERNEL_BOT_TOKEN }}
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.KERNEL_BOT_TOKEN }}
+
+      - name: Check the version
+        id: check
+        run: |
+          if [[ ! $VERSION =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "not a kernel release: $VERSION" >&2
+            exit 1
+          fi
+          branch=kernel/$VERSION
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          current=$(cat kernel/VERSION)
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          if [[ $VERSION == "$current" ]]; then
+            echo "already on $VERSION"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif [[ -n $(gh pr list --head "$branch" --state open --json number --jq '.[]') ]]; then
+            echo "there's already a PR for $VERSION"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The changes go in the checkout, which is all run.sh's container
+      # sees; only kernel/ is committed.
+      - name: Update
+        if: steps.check.outputs.skip != 'true'
+        run: kernel/run.sh kernel/update.sh "$VERSION" changes.txt
+
+      - name: Open a PR
+        if: steps.check.outputs.skip != 'true'
+        env:
+          BRANCH: ${{ steps.check.outputs.branch }}
+          CURRENT: ${{ steps.check.outputs.current }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c "$BRANCH"
+          git add -A kernel
+          git commit -m "kernel: move to $VERSION"
+          git push --force origin "$BRANCH"
+
+          series=$(cut -d. -f1-2 <<< "$VERSION")
+          {
+            echo "Moves the guest kernel from $CURRENT to $VERSION, with \`kernel/update.sh\`."
+            echo
+            echo "Before merging, boot the kernel from this PR's \`kernel\` artifact (see \`kernel/README.md\`)."
+            if [[ $series != $(cut -d. -f1-2 <<< "$CURRENT") ]]; then
+              echo
+              echo "This is a new series: once it's published, move the default kernel in \`cmd/c2vm/kernel.go\` to \`:$series\`."
+            fi
+            echo
+            if [[ -s changes.txt ]]; then
+              echo '<details><summary>Config changes</summary>'
+              echo
+              echo '```'
+              # A PR description is at most 65536 characters.
+              head -c 60000 "changes.txt"
+              echo '```'
+              echo
+              echo '</details>'
+            else
+              echo 'No config changes.'
+            fi
+          } > "$RUNNER_TEMP/body"
+          gh pr create --draft --base main --head "$BRANCH" \
+            --title "kernel: move to $VERSION" --body-file "$RUNNER_TEMP/body"
+
+          # An open PR for an older release is superseded by this one.
+          gh pr list --state open --json number,headRefName \
+            --jq ".[] | select(.headRefName | startswith(\"kernel/\")) | select(.headRefName != \"$BRANCH\") | .number" |
+            while read -r pr; do
+              gh pr close "$pr" --delete-branch --comment "Superseded by $VERSION."
+            done
