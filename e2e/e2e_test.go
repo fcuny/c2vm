@@ -407,15 +407,24 @@ func (term *terminal) output() string {
 	return term.out.String()
 }
 
-// waitFor waits for s to show up on the terminal.
+// waitFor waits for s to show up on the terminal. It fails if c2vm exits
+// first, e.g. as the image couldn't be pulled, rather than waiting until
+// the timeout.
 func (term *terminal) waitFor(s string) {
 	term.t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := time.After(timeout)
 	for !strings.Contains(term.output(), s) {
-		if time.Now().After(deadline) {
+		select {
+		case <-term.done:
+			// The last read may have brought s.
+			if strings.Contains(term.output(), s) {
+				return
+			}
+			term.t.Fatalf("c2vm exited before %q showed up on the terminal", s)
+		case <-deadline:
 			term.t.Fatalf("%q never showed up on the terminal", s)
+		case <-time.After(50 * time.Millisecond):
 		}
-		time.Sleep(50 * time.Millisecond)
 	}
 }
 
