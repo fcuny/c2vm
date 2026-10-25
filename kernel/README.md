@@ -29,9 +29,9 @@ To skip a release, close its PR: the daily check won't open it again. Run by han
 
 ```sh
 # Extract the kernel for the host's architecture, with crane...
-crane export ghcr.io/fcuny/c2vm-kernel:7.2 - | tar -x boot/kernel
+crane export ghcr.io/fcuny/c2vm-kernel:7.3 - | tar -x boot/kernel
 # ...or with podman.
-podman create --name c2vm-kernel ghcr.io/fcuny/c2vm-kernel:7.2 none
+podman create --name c2vm-kernel ghcr.io/fcuny/c2vm-kernel:7.3 none
 podman export c2vm-kernel | tar -x boot/kernel
 podman rm c2vm-kernel
 

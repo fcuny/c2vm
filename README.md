@@ -92,16 +92,16 @@ At boot, `c2vm-init` runs from an initramfs: it mounts the image with a writable
 
 ### Kernel
 
-`c2vm boot` pulls a kernel of a recent stable series, the one `cmd/c2vm/kernel.go` names, built with [a minimal config for microVMs](kernel/), from `ghcr.io/fcuny/c2vm-kernel:7.2` (for arm64, with the kernel in `/boot/kernel`), and caches it. `-kernel` takes another image, or a kernel file. To extract the kernel yourself:
+`c2vm boot` pulls a kernel of a recent stable series, the one `cmd/c2vm/kernel.go` names, built with [a minimal config for microVMs](kernel/), from `ghcr.io/fcuny/c2vm-kernel:7.3` (for arm64, with the kernel in `/boot/kernel`), and caches it. `-kernel` takes another image, or a kernel file. To extract the kernel yourself:
 
 ```sh
-crane export ghcr.io/fcuny/c2vm-kernel:7.2 - | tar -x boot/kernel
+crane export ghcr.io/fcuny/c2vm-kernel:7.3 - | tar -x boot/kernel
 ```
 
 Or with podman (the image has no command, so `create` needs a placeholder; the container is never started):
 
 ```sh
-podman create --name c2vm-kernel ghcr.io/fcuny/c2vm-kernel:7.2 none
+podman create --name c2vm-kernel ghcr.io/fcuny/c2vm-kernel:7.3 none
 podman export c2vm-kernel | tar -x boot/kernel
 podman rm c2vm-kernel
 ```
