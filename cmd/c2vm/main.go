@@ -33,7 +33,7 @@ const usage = `usage: c2vm <command> [flags] <image>
 Commands:
   save     pull an image and convert it for booting
   boot     boot an image as a VM
-  version  print c2vm's version
+  version  print the versions of c2vm and of the c2vm-init built into it
 
 Run c2vm <command> -h for the command's flags.
 `
@@ -55,6 +55,7 @@ func main() {
 		err = runBoot(args)
 	case "version", "-version", "--version":
 		fmt.Println("c2vm", version())
+		fmt.Println(initVersion(embeddedInit))
 		return
 	case "-h", "-help", "--help", "help":
 		fmt.Print(usage)
