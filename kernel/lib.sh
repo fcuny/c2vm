@@ -4,6 +4,10 @@
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 fragment=$here/configs/c2vm.fragment
 
+# For every make: run.sh's environment is arm64, like the kernel.
+# shellcheck disable=SC2034 # used by build.sh and update.sh
+make_args=(ARCH=arm64)
+
 # series_of <version>: its series, e.g. 7.4 for 7.4 and 7.4.1.
 series_of() {
 	"$here/series.sh" "$1"

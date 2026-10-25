@@ -38,7 +38,7 @@ fetch "$version" "$work"
 src=$work/linux-$version
 
 cp "$config" "$src/.config"
-make -C "$src" ARCH=arm64 olddefconfig
+make -C "$src" "${make_args[@]}" olddefconfig
 
 # The config is the one we ship, so olddefconfig shouldn't change it. If
 # it does, e.g. a patch release added an option, it needs to be
@@ -48,7 +48,7 @@ if ! diff -u <(options "$config") <(options "$src/.config") >&2; then
 	exit 1
 fi
 
-make -C "$src" ARCH=arm64 -j"$(nproc)" Image
+make -C "$src" "${make_args[@]}" -j"$(nproc)" Image
 
 mkdir -p "$out/arm64"
 cp "$src/arch/arm64/boot/Image" "$out/arm64/kernel"
