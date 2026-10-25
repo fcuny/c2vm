@@ -6,10 +6,13 @@ on:
       - main
     paths:
       - kernel/**
+      # Not the kernel's: e.g. the default kernel job's PRs change it.
+      - '!kernel/README.md'
       - .github/workflows/kernel.yml
   pull_request:
     paths:
       - kernel/**
+      - '!kernel/README.md'
       - .github/workflows/kernel.yml
   workflow_dispatch:
 
@@ -88,29 +91,40 @@ jobs:
             org.opencontainers.image.description=Linux ${{ steps.version.outputs.version }} guest kernel for c2vm
             org.opencontainers.image.licenses=GPL-2.0-only
 
-  # After a new series is published, opens a draft PR that makes it c2vm's
-  # default kernel. It uses KERNEL_BOT_TOKEN, like the kernel-update
-  # workflow, so that the PR's checks run.
+  # After a new series is published from main, opens a draft PR that
+  # makes it c2vm's default kernel. It uses KERNEL_BOT_TOKEN, like the
+  # kernel-update workflow, so that the PR's checks run.
   default:
     name: Default kernel
     needs: publish
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    # One at a time, as they push the same branches.
+    concurrency:
+      group: kernel-default
     permissions:
       contents: read
-    env:
-      GH_TOKEN: ${{ secrets.KERNEL_BOT_TOKEN }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Check out code
         uses: actions/checkout@v7
         with:
-          token: ${{ secrets.KERNEL_BOT_TOKEN }}
+          persist-credentials: false
 
       - name: Open a PR
+        env:
+          GH_TOKEN: ${{ secrets.KERNEL_BOT_TOKEN }}
         run: |
           series=$(kernel/series.sh)
-          current=$(grep -o 'c2vm-kernel:[0-9.]*' cmd/c2vm/kernel.go | cut -d: -f2)
-          if [[ $series == "$current" ]]; then
-            echo "the default kernel is already :$series"
+          current=$(grep -oE 'c2vm-kernel:[0-9]+\.[0-9]+"' cmd/c2vm/kernel.go | cut -d: -f2 | tr -d '"')
+          if [[ -z $current ]]; then
+            echo "can't find the default kernel's tag in cmd/c2vm/kernel.go" >&2
+            exit 1
+          fi
+          if [[ $(printf '%s\n' "$current" "$series" | sort -V | tail -n 1) == "$current" ]]; then
+            echo "the default kernel is :$current, which is :$series or newer"
             exit 0
           fi
           branch=c2vm/default-kernel-$series
@@ -119,15 +133,38 @@ jobs:
             exit 0
           fi
 
-          # The tag, not a longer one that starts with it (e.g. 7.2.9).
-          sed -i "s/c2vm-kernel:${current//./\\.}\([^0-9.]\)/c2vm-kernel:$series\1/g" \
+          # The tag, not a longer one that starts with it (e.g. 7.2.9):
+          # it ends the line, or a sentence, or is followed by something
+          # else than a digit or a dot.
+          sed -i -E "s/c2vm-kernel:${current//./\\.}(\.?([^0-9.]|$))/c2vm-kernel:$series\1/g" \
             cmd/c2vm/kernel.go README.md kernel/README.md
+          if git diff --quiet cmd/c2vm/kernel.go; then
+            echo "didn't change the default kernel in cmd/c2vm/kernel.go" >&2
+            exit 1
+          fi
 
+          gh auth setup-git
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git switch -c "$branch"
           git commit -am "c2vm: boot $series kernels by default"
           git push --force origin "$branch"
+          # The marker tells this job's PRs from others.
           gh pr create --draft --base main --head "$branch" \
             --title "c2vm: boot $series kernels by default" \
-            --body "Moves the default kernel from \`:$current\` to \`:$series\`, which the kernel workflow just published. Before merging, run \`make e2e\`."
+            --body "<!-- kernel-default -->
+          Moves the default kernel from \`:$current\` to \`:$series\`, which the kernel workflow just published. Before merging, run \`make e2e\`."
+
+          # This supersedes the open PRs for older series.
+          gh pr list --state open --limit 200 --json number,headRefName,body \
+            --jq '.[] | select(.body | contains("<!-- kernel-default -->")) | "\(.number) \(.headRefName)"' \
+            > "$RUNNER_TEMP/prs"
+          while read -r pr head; do
+            other=${head#c2vm/default-kernel-}
+            if [[ $head == "$branch" || ! $other =~ ^[0-9]+\.[0-9]+$ ]]; then
+              continue
+            fi
+            if [[ $(printf '%s\n' "$other" "$series" | sort -V | tail -n 1) == "$series" ]]; then
+              gh pr close "$pr" --delete-branch --comment "Superseded by :$series."
+            fi
+          done < "$RUNNER_TEMP/prs"
