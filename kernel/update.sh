@@ -18,10 +18,16 @@ version=${1:?usage: update.sh <version>}
 # shellcheck source-path=SCRIPTDIR source=lib.sh
 source "$(dirname "$0")/lib.sh"
 
-series=$(series_of "$version")
 current=$(cat "$here/VERSION")
-old=$here/configs/$(series_of "$current")/aarch64.config
-new=$here/configs/$series/aarch64.config
+# Start from the config in configs/, rather than the one for VERSION's
+# series: VERSION may already name the new release.
+configs=("$here"/configs/*/aarch64.config)
+if [[ ${#configs[@]} -ne 1 || ! -f ${configs[0]} ]]; then
+	echo "expected one config in $here/configs/*/, found: ${configs[*]}" >&2
+	exit 1
+fi
+old=${configs[0]}
+new=$here/configs/$(series_of "$version")/aarch64.config
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -40,11 +46,13 @@ if ! check_fragment "$src/.config"; then
 fi
 
 "$src/scripts/diffconfig" "$old" "$src/.config" > "$work/diff"
+# The new config is written before the old one goes, so that there's
+# always one.
+mkdir -p "$(dirname "$new")"
+cp "$src/.config" "$new"
 if [[ $new != "$old" ]]; then
 	rm -r "$(dirname "$old")"
-	mkdir -p "$(dirname "$new")"
 fi
-cp "$src/.config" "$new"
 echo "$version" > "$here/VERSION"
 
 echo "moved from $current to $version; config changes:"

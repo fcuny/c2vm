@@ -65,10 +65,8 @@ jobs:
       - name: Compute tags
         id: version
         run: |
-          source kernel/lib.sh
-          version=$(cat kernel/VERSION)
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "series=$(series_of "$version")" >> "$GITHUB_OUTPUT"
+          echo "version=$(cat kernel/VERSION)" >> "$GITHUB_OUTPUT"
+          echo "series=$(kernel/series.sh)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
