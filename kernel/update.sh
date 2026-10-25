@@ -2,18 +2,20 @@
 #
 # Moves the guest kernel to a new release:
 #
-#   kernel/update.sh <version>
+#   kernel/update.sh <version> [<changes file>]
 #
 # Writes <version> to VERSION, and regenerates the config for its series
 # from the current one: c2vm.fragment is merged in, and olddefconfig
 # gives new options their default value. A new series replaces the old
-# one's config. The changes to the config are printed, to review them.
+# one's config. The changes to the config are printed, to review them,
+# and written to <changes file> if given.
 #
 # Run it with run.sh, like build.sh.
 
 set -euo pipefail
 
-version=${1:?usage: update.sh <version>}
+version=${1:?usage: update.sh <version> [<changes file>]}
+changes=${2:-}
 
 # shellcheck source-path=SCRIPTDIR source=lib.sh
 source "$(dirname "$0")/lib.sh"
@@ -57,3 +59,6 @@ echo "$version" > "$here/VERSION"
 
 echo "moved from $current to $version; config changes:"
 cat "$work/diff"
+if [[ -n $changes ]]; then
+	cp "$work/diff" "$changes"
+fi
