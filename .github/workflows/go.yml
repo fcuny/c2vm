@@ -62,4 +62,4 @@ jobs:
       - name: Go vet and test, with the init embedded
         run: |
           go vet -tags embedinit ./...
-          go test -tags embedinit -run TestEmbeddedInit -v ./cmd/c2vm
+          go test -tags embedinit -v ./cmd/c2vm

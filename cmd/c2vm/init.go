@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"syscall"
 )
 
 // errNoInit is loadInit's error when c2vm has no c2vm-init built in, as
@@ -36,9 +37,11 @@ func loadInit(path string) ([]byte, error) {
 	return init, nil
 }
 
-// readFile reads the regular file at path.
+// readFile reads the regular file at path. It opens it without blocking,
+// as opening a FIFO otherwise waits for a writer, and checks what it is
+// from the open file, so the file can't change in between.
 func readFile(path string) ([]byte, error) {
-	f, err := os.Open(path)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
