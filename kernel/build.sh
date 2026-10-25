@@ -6,7 +6,8 @@
 #   kernel/build.sh <output dir>
 #
 # The kernel ends up in <output dir>/arm64/kernel, along with its config.
-# Needs a Linux host with the usual kernel build dependencies, plus
+# Run it with run.sh, which provides the toolchain. It also works on a
+# Linux host with the usual kernel build dependencies, plus
 # gcc-aarch64-linux-gnu to cross-compile when the host isn't arm64.
 
 set -euo pipefail
