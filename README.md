@@ -28,6 +28,7 @@ Docker Desktop and `podman machine` run one long-lived Linux VM that all contain
 Some limits to keep in mind:
 
 - The writable layer is in memory, capped at half of `-memory`, so jobs that write a lot outside a `-v` mount need a big VM ([#40](https://github.com/fcuny/c2vm/issues/40)).
+- On a `-v` mount, mode bits apply to root too, even on the descriptor that creates a file: Virtualization.framework's virtiofs server enforces them, and c2vm can't change that. GNU tar trips on it when it extracts a symlink whose target has `..` in it, such as those in a kernel tarball, because it first creates a mode-0 placeholder: `Cannot open: Permission denied`. Extract outside the mount, or with `tar -P` for an archive you trust ([#57](https://github.com/fcuny/c2vm/issues/57)).
 - It runs on macOS on Apple silicon only, and boots arm64 images only: the kernel is arm64 and there's no Rosetta, so a `-platform linux/amd64` image pulls but its binaries can't run.
 
 ## How
