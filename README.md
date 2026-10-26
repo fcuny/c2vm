@@ -41,6 +41,8 @@ make build
 ./c2vm boot nginx:stable-alpine3.24-perl
 ```
 
+`make install` installs both in `~/.local/bin`, or in `$PREFIX/bin` with `make install PREFIX=/usr/local`. They have to stay side by side: `c2vm` looks for `c2vm-init` next to itself.
+
 The VM gets an address from Virtualization.framework's NAT, which `c2vm-init` prints when it starts (`c2vm-init: eth0: 192.168.64.30/24`); it's reachable from the Mac at that address. Ctrl-C stops it.
 
 A command after `--` replaces the image's command, as with `docker run`; it's passed to the image's entrypoint, if it has one:
@@ -117,4 +119,4 @@ Virtualization.framework only lets binaries signed with the `com.apple.security.
 
 ### Testing
 
-`go test ./...` runs the unit tests, which don't boot anything. `make e2e` builds c2vm and c2vm-init and boots VMs with them, from `alpine`, to check what commands see and do in the VM: their output and exit status, `-e`, `-i`, `-t` and `-v`. It boots the default kernel, or `C2VM_E2E_KERNEL`: an image, like `ghcr.io/fcuny/c2vm-kernel:7.3`, or a kernel file by its absolute path. It needs macOS on Apple silicon and the network, and CI can't run it ([#53](https://github.com/fcuny/c2vm/issues/53)): run it before opening a PR.
+`make test` runs the unit tests, which don't boot anything, and `make lint` checks formatting and runs `go vet`. `make e2e` builds c2vm and c2vm-init and boots VMs with them, from `alpine`, to check what commands see and do in the VM: their output and exit status, `-e`, `-i`, `-t` and `-v`. It boots the default kernel, or `C2VM_E2E_KERNEL`: an image, like `ghcr.io/fcuny/c2vm-kernel:7.3`, or a kernel file by its absolute path. It needs macOS on Apple silicon and the network, and CI can't run it ([#53](https://github.com/fcuny/c2vm/issues/53)): run it before opening a PR.
