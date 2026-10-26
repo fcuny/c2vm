@@ -1,4 +1,5 @@
-PREFIX ?= $(HOME)/.local
+# Where go install puts binaries: GOBIN, or the first GOPATH entry's bin.
+BINDIR ?= $(or $(shell go env GOBIN),$(firstword $(subst :, ,$(shell go env GOPATH)))/bin)
 
 .PHONY: build
 build:
@@ -17,8 +18,8 @@ endif
 # gets a re-signed binary killed when it starts.
 .PHONY: install
 install: build
-	@mkdir -p $(PREFIX)/bin
-	@install -m 755 c2vm c2vm-init $(PREFIX)/bin
+	@mkdir -p $(BINDIR)
+	@install -m 755 c2vm c2vm-init $(BINDIR)
 
 .PHONY: test
 test:

@@ -41,7 +41,7 @@ make build
 ./c2vm boot nginx:stable-alpine3.24-perl
 ```
 
-`make install` installs both in `~/.local/bin`, or in `$PREFIX/bin` with `make install PREFIX=/usr/local`. They have to stay side by side: `c2vm` looks for `c2vm-init` next to itself.
+`make install` installs both where `go install` would, in `$GOBIN` or `$GOPATH/bin`, or elsewhere with `make install BINDIR=/usr/local/bin`. They have to stay side by side: `c2vm` looks for `c2vm-init` next to itself.
 
 The VM gets an address from Virtualization.framework's NAT, which `c2vm-init` prints when it starts (`c2vm-init: eth0: 192.168.64.30/24`); it's reachable from the Mac at that address. Ctrl-C stops it.
 
