@@ -516,11 +516,16 @@ func copyFile(src, dst string) error {
 }
 
 // findInit returns the path to the c2vm-init binary: path if set,
-// otherwise c2vm-init in the same directory as c2vm.
+// otherwise c2vm-init in the same directory as c2vm, following symlinks
+// to c2vm, so a link in a bin directory finds the init next to the
+// binary it points to.
 func findInit(path string) (string, error) {
 	if path == "" {
 		self, err := os.Executable()
 		if err != nil {
+			return "", err
+		}
+		if self, err = filepath.EvalSymlinks(self); err != nil {
 			return "", err
 		}
 		path = filepath.Join(filepath.Dir(self), "c2vm-init")
