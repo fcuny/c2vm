@@ -91,7 +91,7 @@ Each image is converted to a read-only ext4 filesystem, without mounting anythin
 
 At boot, `c2vm-init` runs from an initramfs: it mounts the image with a writable in-memory layer on top, and runs the image's entrypoint and command as the image's user, from its working directory and with its environment. Changes are lost when the VM stops.
 
-`c2vm` looks for `c2vm-init` next to itself; use `-init` to point elsewhere. It's a static Linux binary for the Mac's architecture, which `make build` takes care of.
+`c2vm` looks for `c2vm-init` next to itself, or next to the binary a symlink to it points to; use `-init` to point elsewhere. It's a static Linux binary for the Mac's architecture, which `make build` takes care of.
 
 ### Kernel
 
