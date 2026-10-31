@@ -22,14 +22,31 @@ fetch() {
 	local tarball=linux-$version.tar.xz
 	local base=https://cdn.kernel.org/pub/linux/kernel/v${version%%.*}.x
 	local downloads=$here/downloads
+	local sum attempt
 	mkdir -p "$downloads"
 	if [[ ! -f $downloads/$tarball ]]; then
 		echo "downloading $tarball"
-		curl -fsSL -o "$downloads/$tarball.part" "$base/$tarball"
+		curl -fsSL --retry 3 -o "$downloads/$tarball.part" "$base/$tarball"
 		mv "$downloads/$tarball.part" "$downloads/$tarball"
 	fi
-	curl -fsSL -o "$dir/sha256sums.asc" "$base/sha256sums.asc"
-	if ! (cd "$downloads" && awk -v f="$tarball" '$2 == f' "$dir/sha256sums.asc" | sha256sum -c -); then
+	# kernel.org lists a release in sha256sums.asc a few minutes after it
+	# publishes it, and the CDN can serve an older copy for longer: the
+	# query string gets past its cache, and the release gets 10 minutes
+	# to show up.
+	for attempt in 1 2 3 4 5; do
+		curl -fsSL --retry 3 -o "$dir/sha256sums.asc" "$base/sha256sums.asc?$(date +%s)"
+		sum=$(awk -v f="$tarball" '$2 == f' "$dir/sha256sums.asc")
+		if [[ -n $sum ]]; then
+			break
+		fi
+		if [[ $attempt -eq 5 ]]; then
+			echo "sha256sums.asc doesn't list $tarball" >&2
+			return 1
+		fi
+		echo "sha256sums.asc doesn't list $tarball yet, trying again in $attempt minute(s)" >&2
+		sleep $((attempt * 60))
+	done
+	if ! (cd "$downloads" && echo "$sum" | sha256sum -c -); then
 		rm -f "$downloads/$tarball"
 		echo "bad checksum for $tarball: removed it, try again" >&2
 		return 1
