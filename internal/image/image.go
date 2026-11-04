@@ -4,11 +4,14 @@ package image
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
+	"net/http"
 	"path"
 
 	"github.com/Microsoft/hcsshim/ext4/tar2ext4"
@@ -17,6 +20,7 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
@@ -71,18 +75,46 @@ func (k anonymousFallback) Resolve(r authn.Resource) (authn.Authenticator, error
 	return auth, nil
 }
 
+// Transient reports whether err, from Pull, says nothing about the image
+// itself: the registry couldn't be reached, refused the request for now
+// (429), or failed (5xx). Any other answer from the registry, like an
+// unknown manifest or a denied request, is about the image. A canceled
+// pull isn't transient either.
+func Transient(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var terr *transport.Error
+	if errors.As(err, &terr) {
+		return terr.StatusCode == http.StatusTooManyRequests || terr.StatusCode >= 500
+	}
+	var nerr net.Error
+	return errors.As(err, &nerr)
+}
+
 // Digest is the digest of the image's manifest, for the platform it
 // was pulled for.
 func (i *Image) Digest() (v1.Hash, error) {
 	return i.image.Digest()
 }
 
-// Config returns the image's runtime configuration: its entrypoint,
-// command, environment, working directory and so on.
-func (i *Image) Config() (ocispec.ImageConfig, error) {
-	cf, err := i.image.ConfigFile()
+// RawConfig returns the image's configuration file, as the registry
+// serves it, for ParseConfig.
+func (i *Image) RawConfig() ([]byte, error) {
+	raw, err := i.image.RawConfigFile()
 	if err != nil {
-		return ocispec.ImageConfig{}, fmt.Errorf("failed to read the image config: %w", err)
+		return nil, fmt.Errorf("failed to read the image config: %w", err)
+	}
+	return raw, nil
+}
+
+// ParseConfig returns the runtime configuration in an image's
+// configuration file: its entrypoint, command, environment, working
+// directory and so on.
+func ParseConfig(raw []byte) (ocispec.ImageConfig, error) {
+	cf, err := v1.ParseConfigFile(bytes.NewReader(raw))
+	if err != nil {
+		return ocispec.ImageConfig{}, fmt.Errorf("failed to parse the image config: %w", err)
 	}
 
 	return ocispec.ImageConfig{

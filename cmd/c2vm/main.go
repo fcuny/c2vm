@@ -19,6 +19,7 @@ import (
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/renameio/v2"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"golang.org/x/term"
 
 	"fcuny.net/c2vm/internal/cache"
@@ -374,12 +375,7 @@ func runBoot(args []string) error {
 		return err
 	}
 
-	img, imagePath, err := pullImage(ctx, opts.commonOptions)
-	if err != nil {
-		return err
-	}
-
-	imageConfig, err := img.Config()
+	imageConfig, imagePath, err := pullImage(ctx, opts.commonOptions)
 	if err != nil {
 		return err
 	}
@@ -471,29 +467,46 @@ func terminalEnv(env []string) []string {
 	return append(env, "TERM="+defaultTerm)
 }
 
-// pullImage resolves the image and returns it with the path of its ext4
-// image in the cache, which is only built if it isn't there yet.
-func pullImage(ctx context.Context, opts commonOptions) (*image.Image, string, error) {
-	img, err := image.Pull(ctx, opts.image, opts.platform)
+// pullImage resolves the image and returns its configuration, with the
+// path of its ext4 image in the cache. Both are cached, so a later boot
+// can do without the registry (see resolve).
+func pullImage(ctx context.Context, opts commonOptions) (ocispec.ImageConfig, string, error) {
+	c := cache.New(opts.cacheDir)
+	digest, img, err := resolve(ctx, c, opts.image, opts.platform, "images", "configs")
 	if err != nil {
-		return nil, "", err
+		return ocispec.ImageConfig{}, "", err
 	}
 
-	digest, err := img.Digest()
+	path, cached, err := c.Get("images", digest, fromImage(img, (*image.Image).WriteExt4))
 	if err != nil {
-		return nil, "", err
-	}
-
-	path, cached, err := cache.New(opts.cacheDir).Get("images", digest, img.WriteExt4)
-	if err != nil {
-		return nil, "", err
+		return ocispec.ImageConfig{}, "", err
 	}
 	if cached {
 		log.Printf("using cached %s\n", path)
 	} else {
 		log.Printf("wrote %s\n", path)
 	}
-	return img, path, nil
+
+	configPath, _, err := c.Get("configs", digest, fromImage(img, func(img *image.Image, w io.ReadWriteSeeker) error {
+		raw, err := img.RawConfig()
+		if err != nil {
+			return err
+		}
+		_, err = w.Write(raw)
+		return err
+	}))
+	if err != nil {
+		return ocispec.ImageConfig{}, "", err
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return ocispec.ImageConfig{}, "", err
+	}
+	config, err := image.ParseConfig(raw)
+	if err != nil {
+		return ocispec.ImageConfig{}, "", fmt.Errorf("%s: %w", configPath, err)
+	}
+	return config, path, nil
 }
 
 // copyFile copies src to dst, atomically.
