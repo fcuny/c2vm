@@ -4,18 +4,12 @@ package initramfs
 
 import (
 	"io"
-	"os"
 
 	"fcuny.net/c2vm/internal/guest"
 )
 
-// Write writes an initramfs to w, with the init binary at initBinary.
-func Write(w io.Writer, initBinary string, config guest.Config) error {
-	init, err := os.ReadFile(initBinary)
-	if err != nil {
-		return err
-	}
-
+// Write writes an initramfs to w, with init as the init binary.
+func Write(w io.Writer, init []byte, config guest.Config) error {
 	configData, err := config.Marshal()
 	if err != nil {
 		return err
