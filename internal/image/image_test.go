@@ -2,6 +2,8 @@ package image
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"net"
@@ -45,6 +47,9 @@ func TestTransient(t *testing.T) {
 		{"unreachable", fmt.Errorf("failed to pull alpine: %w", refused), true},
 		{"no such host", &url.Error{Op: "Get", URL: "https://registry/v2/", Err: &net.DNSError{Err: "no such host", Name: "registry", IsNotFound: true}}, true},
 		{"dial timeout", dial(expired), true},
+		// Any failure to talk to the registry falls back, TLS included:
+		// what's cached was checked against its digest when it was pulled.
+		{"untrusted certificate", &url.Error{Op: "Get", URL: "https://registry/v2/", Err: &tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}}, true},
 		{"canceled", &url.Error{Op: "Get", URL: "https://registry/v2/", Err: context.Canceled}, false},
 		{"dial canceled", dial(canceled), false},
 		{"other", errors.New("invalid reference"), false},
