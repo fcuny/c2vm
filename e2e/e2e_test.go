@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -32,11 +33,12 @@ import (
 	"github.com/creack/pty"
 )
 
-// image is what the tests boot: small, with a shell and coreutils from
-// busybox. It's pinned so a new release doesn't change the output. Every
-// boot fetches its manifest, so it comes from ECR's mirror of Docker's
-// official images: a few runs would use up Docker Hub's anonymous limit.
-const image = "public.ecr.aws/docker/library/alpine:3.24"
+// imageTag is what the tests boot: small, with a shell and coreutils
+// from busybox. It's pinned so a new release doesn't change the output.
+// Only the first boot looks it up: the tests boot it by digest, from
+// c2vm's cache. It comes from ECR's mirror of Docker's official images
+// anyway, as Docker Hub's anonymous limit is lower.
+const imageTag = "public.ecr.aws/docker/library/alpine:3.24"
 
 // timeout is how long a VM may run before the test gives up on it.
 const timeout = 2 * time.Minute
@@ -49,6 +51,8 @@ var (
 	c2vm, c2vmInit string
 	// bootArgs come first in every c2vm boot.
 	bootArgs []string
+	// image is imageTag by the digest it resolved to.
+	image string
 )
 
 func TestMain(m *testing.M) {
@@ -78,28 +82,76 @@ func testMain(m *testing.M) int {
 		return 1
 	}
 
-	if kernel := os.Getenv("C2VM_E2E_KERNEL"); kernel != "" {
+	kernel := os.Getenv("C2VM_E2E_KERNEL")
+	if kernel != "" {
 		if err := checkKernel(kernel); err != nil {
 			fmt.Fprintf(os.Stderr, "C2VM_E2E_KERNEL: %v\n", err)
 			return 1
 		}
-		bootArgs = append(bootArgs, "-kernel", kernel)
+		bootArgs = []string{"-kernel", kernel}
 	}
 
 	// Pull the kernel and the image once, before the tests boot VMs in
 	// parallel and would all fetch them at the same time.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	warm := exec.CommandContext(ctx, c2vm, slices.Concat([]string{"boot"}, bootArgs, []string{image, "--", "true"})...)
+	warm := exec.CommandContext(ctx, c2vm, slices.Concat([]string{"boot"}, bootArgs, []string{imageTag, "--", "true"})...)
 	// SIGTERM lets c2vm remove its files, which SIGKILL wouldn't.
 	warm.Cancel = func() error { return warm.Process.Signal(syscall.SIGTERM) }
 	warm.WaitDelay = 10 * time.Second
-	if out, err := warm.CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "booting %s: %v\n%s", image, err, out)
+	out, err := warm.CombinedOutput()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "booting %s: %v\n%s", imageTag, err, out)
+		return 1
+	}
+
+	// From now on, boot the image and the kernel by the digests their
+	// tags resolved to, which c2vm finds in its cache without asking the
+	// registry: a run of the tests looks each tag up once.
+	resolved := resolvedDigests(string(out))
+	digest, ok := resolved[imageTag]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "booting %s: c2vm didn't log what it resolved to\n%s", imageTag, out)
+		return 1
+	}
+	image = pinned(imageTag, digest)
+	delete(resolved, imageTag)
+	// What's left is the kernel, unless it's a file.
+	switch len(resolved) {
+	case 0:
+	case 1:
+		for ref, digest := range resolved {
+			bootArgs = []string{"-kernel", pinned(ref, digest)}
+		}
+	default:
+		fmt.Fprintf(os.Stderr, "booting %s: c2vm resolved more than the image and the kernel\n%s", imageTag, out)
 		return 1
 	}
 
 	return m.Run()
+}
+
+// resolvedRE matches c2vm's log line for a reference it looked up.
+var resolvedRE = regexp.MustCompile(`(?m)^c2vm: resolved (\S+) to (sha256:[0-9a-f]{64})\r?$`)
+
+// resolvedDigests returns the digest each reference c2vm looked up
+// resolved to, from what it logged.
+func resolvedDigests(log string) map[string]string {
+	digests := map[string]string{}
+	for _, m := range resolvedRE.FindAllStringSubmatch(log, -1) {
+		digests[m[1]] = m[2]
+	}
+	return digests
+}
+
+// pinned returns ref, by tag or by digest, as a reference to digest.
+func pinned(ref, digest string) string {
+	if i := strings.Index(ref, "@"); i >= 0 {
+		ref = ref[:i]
+	} else if i := strings.LastIndex(ref, ":"); i > strings.LastIndex(ref, "/") {
+		ref = ref[:i]
+	}
+	return ref + "@" + digest
 }
 
 // checkKernel fails if kernel, which c2vm boot -kernel takes, would be
@@ -269,6 +321,54 @@ func TestInitInvalid(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), path+" is not an ELF binary") {
 		t.Errorf("stderr %q, want it to say %s is not an ELF binary", stderr.String(), path)
+	}
+}
+
+// TestOffline boots the image by tag with the registry out of reach:
+// c2vm boots what the tag resolved to before, and warns it may be out of
+// date.
+func TestOffline(t *testing.T) {
+	t.Parallel()
+	cmd := bootCmd(t, imageTag, "--", "true")
+	// The kernel is booted by digest, from the cache, so only the tag's
+	// lookup goes through the proxy, which refuses the connection.
+	proxy := "http://127.0.0.1:1"
+	cmd.Env = append(os.Environ(), "HTTPS_PROXY="+proxy, "HTTP_PROXY="+proxy, "NO_PROXY=", "no_proxy=")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("c2vm boot with the registry out of reach: %v\n%s", err, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "may be out of date") {
+		t.Errorf("no warning that the image may be out of date:\n%s", stderr.String())
+	}
+}
+
+func TestResolvedDigests(t *testing.T) {
+	d1, d2 := "sha256:"+strings.Repeat("a", 64), "sha256:"+strings.Repeat("b", 64)
+	log := "c2vm: resolved ghcr.io/fcuny/c2vm-kernel:7.3 to " + d1 + "\n" +
+		"c2vm: using cached /cache/kernels/sha256-aaaa\n" +
+		"c2vm: resolved " + imageTag + " to " + d2 + "\r\n" +
+		"c2vm: resolved short to sha256:abc\n"
+	got := resolvedDigests(log)
+	want := map[string]string{"ghcr.io/fcuny/c2vm-kernel:7.3": d1, imageTag: d2}
+	if len(got) != len(want) || got["ghcr.io/fcuny/c2vm-kernel:7.3"] != d1 || got[imageTag] != d2 {
+		t.Errorf("resolvedDigests = %v, want %v", got, want)
+	}
+}
+
+func TestPinned(t *testing.T) {
+	const digest = "sha256:aaaa"
+	for ref, want := range map[string]string{
+		"public.ecr.aws/docker/library/alpine:3.24": "public.ecr.aws/docker/library/alpine@sha256:aaaa",
+		"ghcr.io/fcuny/c2vm-kernel@sha256:bbbb":     "ghcr.io/fcuny/c2vm-kernel@sha256:aaaa",
+		"localhost:5000/c2vm-kernel:test":           "localhost:5000/c2vm-kernel@sha256:aaaa",
+		"localhost:5000/c2vm-kernel":                "localhost:5000/c2vm-kernel@sha256:aaaa",
+		"index.docker.io/library/alpine:latest":     "index.docker.io/library/alpine@sha256:aaaa",
+	} {
+		if got := pinned(ref, digest); got != want {
+			t.Errorf("pinned(%s) = %s, want %s", ref, got, want)
+		}
 	}
 }
 
