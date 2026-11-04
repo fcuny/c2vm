@@ -472,12 +472,12 @@ func terminalEnv(env []string) []string {
 // can do without the registry (see resolve).
 func pullImage(ctx context.Context, opts commonOptions) (ocispec.ImageConfig, string, error) {
 	c := cache.New(opts.cacheDir)
-	digest, img, err := resolve(ctx, c, opts.image, opts.platform, "images", "configs")
+	res, err := resolve(ctx, c, opts.image, opts.platform, "images", "configs")
 	if err != nil {
 		return ocispec.ImageConfig{}, "", err
 	}
 
-	path, cached, err := c.Get("images", digest, fromImage(img, (*image.Image).WriteExt4))
+	path, cached, err := c.Get("images", res.digest, fromImage(res.img, (*image.Image).WriteExt4))
 	if err != nil {
 		return ocispec.ImageConfig{}, "", err
 	}
@@ -487,7 +487,7 @@ func pullImage(ctx context.Context, opts commonOptions) (ocispec.ImageConfig, st
 		log.Printf("wrote %s\n", path)
 	}
 
-	configPath, _, err := c.Get("configs", digest, fromImage(img, func(img *image.Image, w io.ReadWriteSeeker) error {
+	configPath, _, err := c.Get("configs", res.digest, fromImage(res.img, func(img *image.Image, w io.ReadWriteSeeker) error {
 		raw, err := img.RawConfig()
 		if err != nil {
 			return err
@@ -496,6 +496,9 @@ func pullImage(ctx context.Context, opts commonOptions) (ocispec.ImageConfig, st
 		return err
 	}))
 	if err != nil {
+		return ocispec.ImageConfig{}, "", err
+	}
+	if err := res.record(); err != nil {
 		return ocispec.ImageConfig{}, "", err
 	}
 	raw, err := os.ReadFile(configPath)

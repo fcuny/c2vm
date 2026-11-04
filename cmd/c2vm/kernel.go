@@ -35,15 +35,18 @@ func resolveKernel(ctx context.Context, kernel, cacheDir string) (string, error)
 	// The hypervisor can only run guests of the host's architecture,
 	// whatever the image's platform is.
 	c := cache.New(cacheDir)
-	digest, img, err := resolve(ctx, c, kernel, v1.Platform{OS: "linux", Architecture: runtime.GOARCH}, "kernels")
+	res, err := resolve(ctx, c, kernel, v1.Platform{OS: "linux", Architecture: runtime.GOARCH}, "kernels")
 	if err != nil {
 		return "", fmt.Errorf("kernel %q is neither a file nor a pullable image: %w", kernel, err)
 	}
 
-	path, cached, err := c.Get("kernels", digest, fromImage(img, func(img *image.Image, w io.ReadWriteSeeker) error {
+	path, cached, err := c.Get("kernels", res.digest, fromImage(res.img, func(img *image.Image, w io.ReadWriteSeeker) error {
 		return img.ExtractFile(kernelPath, w)
 	}))
 	if err != nil {
+		return "", err
+	}
+	if err := res.record(); err != nil {
 		return "", err
 	}
 	if !cached {

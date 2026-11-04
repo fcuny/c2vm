@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -36,8 +37,11 @@ type flakyRegistry struct {
 	digest    v1.Hash
 	// fail is the status and error code to answer with, as "404
 	// MANIFEST_UNKNOWN", or empty to serve the image.
-	fail     atomic.Value
-	requests atomic.Int32
+	fail atomic.Value
+	// failBlobs makes requests for blobs (layers and configs) fail, after
+	// the manifest was served.
+	failBlobs atomic.Bool
+	requests  atomic.Int32
 }
 
 func newFlakyRegistry(t *testing.T) *flakyRegistry {
@@ -54,6 +58,12 @@ func newFlakyRegistry(t *testing.T) *flakyRegistry {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(code)
 			fmt.Fprintf(w, `{"errors":[{"code":%q,"message":"injected by the test"}]}`, errCode)
+			return
+		}
+		// 501 rather than 500, which go-containerregistry retries for
+		// seconds.
+		if reg.failBlobs.Load() && strings.Contains(r.URL.Path, "/blobs/") {
+			http.Error(w, "injected by the test", http.StatusNotImplemented)
 			return
 		}
 		backend.ServeHTTP(w, r)
@@ -131,12 +141,19 @@ func TestResolvePulls(t *testing.T) {
 	c := cache.New(t.TempDir())
 	captureLog(t)
 
-	digest, img, err := resolve(context.Background(), c, reg.tag, arm64, "images")
+	res, err := resolve(context.Background(), c, reg.tag, arm64, "images")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if digest != reg.digest || img == nil {
-		t.Errorf("resolve = %v, %v; want %v and the image", digest, img, reg.digest)
+	if res.digest != reg.digest || res.img == nil {
+		t.Errorf("resolve = %v, %v; want %v and the image", res.digest, res.img, reg.digest)
+	}
+	// The record waits until the caller has cached the files.
+	if _, ok, _ := c.Ref(reg.tag, arm64); ok {
+		t.Error("resolve recorded the tag before its files were cached")
+	}
+	if err := res.record(); err != nil {
+		t.Fatal(err)
 	}
 	rec, ok, err := c.Ref(reg.tag, arm64)
 	if !ok || err != nil || rec.Digest != reg.digest {
@@ -156,18 +173,22 @@ func TestResolveFallback(t *testing.T) {
 			reg := newFlakyRegistry(t)
 			c := cache.New(t.TempDir())
 			logs := captureLog(t)
-			if _, _, err := resolve(context.Background(), c, reg.tag, arm64, "images"); err != nil {
+			res, err := resolve(context.Background(), c, reg.tag, arm64, "images")
+			if err != nil {
 				t.Fatal(err)
 			}
 			cacheFiles(t, c, reg.digest, "images")
+			if err := res.record(); err != nil {
+				t.Fatal(err)
+			}
 
 			tt.down(reg)
-			digest, img, err := resolve(context.Background(), c, reg.tag, arm64, "images")
+			res, err = resolve(context.Background(), c, reg.tag, arm64, "images")
 			if err != nil {
 				t.Fatalf("resolve with the registry down: %v", err)
 			}
-			if digest != reg.digest || img != nil {
-				t.Errorf("resolve = %v, %v; want %v from the cache", digest, img, reg.digest)
+			if res.digest != reg.digest || res.img != nil {
+				t.Errorf("resolve = %v, %v; want %v from the cache", res.digest, res.img, reg.digest)
 			}
 			if !strings.Contains(logs.String(), "may be out of date") {
 				t.Errorf("no warning in the log:\n%s", logs)
@@ -207,7 +228,7 @@ func TestResolveNoFallback(t *testing.T) {
 
 			reg.fail.Store(tt.fail)
 			code := strings.Fields(tt.fail)[1]
-			if _, _, err := resolve(context.Background(), c, reg.tag, tt.platform, "images"); err == nil || !strings.Contains(err.Error(), code) {
+			if _, err := resolve(context.Background(), c, reg.tag, tt.platform, "images"); err == nil || !strings.Contains(err.Error(), code) {
 				t.Errorf("resolve = %v, want the registry's %s", err, code)
 			}
 		})
@@ -227,7 +248,7 @@ func TestResolveCanceled(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, _, err := resolve(ctx, c, reg.tag, arm64, "images"); err == nil {
+	if _, err := resolve(ctx, c, reg.tag, arm64, "images"); err == nil {
 		t.Error("resolve with a canceled context fell back to the cache")
 	}
 }
@@ -239,17 +260,17 @@ func TestResolveDigest(t *testing.T) {
 	ref := reg.repo + "@" + reg.digest.String()
 
 	// Not cached: it's pulled.
-	digest, img, err := resolve(context.Background(), c, ref, arm64, "images")
-	if err != nil || digest != reg.digest || img == nil {
-		t.Fatalf("resolve, nothing cached = %v, %v, %v; want the pulled image", digest, img, err)
+	res, err := resolve(context.Background(), c, ref, arm64, "images")
+	if err != nil || res.digest != reg.digest || res.img == nil {
+		t.Fatalf("resolve, nothing cached = %v, %v, %v; want the pulled image", res.digest, res.img, err)
 	}
 
 	// Cached: the registry isn't asked.
 	cacheFiles(t, c, reg.digest, "images")
 	reg.requests.Store(0)
-	digest, img, err = resolve(context.Background(), c, ref, arm64, "images")
-	if err != nil || digest != reg.digest || img != nil {
-		t.Errorf("resolve, cached = %v, %v, %v; want %v from the cache", digest, img, err, reg.digest)
+	res, err = resolve(context.Background(), c, ref, arm64, "images")
+	if err != nil || res.digest != reg.digest || res.img != nil {
+		t.Errorf("resolve, cached = %v, %v, %v; want %v from the cache", res.digest, res.img, err, reg.digest)
 	}
 	if n := reg.requests.Load(); n != 0 {
 		t.Errorf("resolve of a cached digest sent %d requests", n)
@@ -262,12 +283,53 @@ func TestResolveDigest(t *testing.T) {
 	if err := c.SetRef(indexRef, arm64, reg.digest); err != nil {
 		t.Fatal(err)
 	}
-	digest, img, err = resolve(context.Background(), c, indexRef, arm64, "images")
-	if err != nil || digest != reg.digest || img != nil {
-		t.Errorf("resolve of a recorded index = %v, %v, %v; want %v from the cache", digest, img, err, reg.digest)
+	res, err = resolve(context.Background(), c, indexRef, arm64, "images")
+	if err != nil || res.digest != reg.digest || res.img != nil {
+		t.Errorf("resolve of a recorded index = %v, %v, %v; want %v from the cache", res.digest, res.img, err, reg.digest)
 	}
 	if n := reg.requests.Load(); n != 0 {
 		t.Errorf("resolve of a recorded index sent %d requests", n)
+	}
+}
+
+// TestRecordAfterFiles checks that a pull that fails after the lookup,
+// here fetching the layers, leaves the tag's record alone: it still
+// points at files that are cached, which a boot can fall back to.
+func TestRecordAfterFiles(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		platform v1.Platform
+		kinds    []string
+		pull     func(ref, cacheDir string) error
+	}{
+		{"image", arm64, []string{"images", "configs"}, func(ref, cacheDir string) error {
+			_, _, err := pullImage(context.Background(), commonOptions{image: ref, platform: arm64, cacheDir: cacheDir})
+			return err
+		}},
+		{"kernel", v1.Platform{OS: "linux", Architecture: runtime.GOARCH}, []string{"kernels"}, func(ref, cacheDir string) error {
+			_, err := resolveKernel(context.Background(), ref, cacheDir)
+			return err
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := newFlakyRegistry(t)
+			captureLog(t)
+			cacheDir := t.TempDir()
+			c := cache.New(cacheDir)
+			old := sha256Of(t, "what the tag pointed at before")
+			if err := c.SetRef(reg.tag, tt.platform, old); err != nil {
+				t.Fatal(err)
+			}
+			cacheFiles(t, c, old, tt.kinds...)
+
+			reg.failBlobs.Store(true)
+			if err := tt.pull(reg.tag, cacheDir); err == nil {
+				t.Fatal("pull succeeded with the blobs failing")
+			}
+			if rec, _, _ := c.Ref(reg.tag, tt.platform); rec.Digest != old {
+				t.Errorf("record = %v after a failed pull, want %v", rec.Digest, old)
+			}
+		})
 	}
 }
 
