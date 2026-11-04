@@ -3,9 +3,7 @@ package initramfs
 import (
 	"bytes"
 	"encoding/json"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"testing"
@@ -59,14 +57,11 @@ func align(n int) int { return (n + 3) &^ 3 }
 
 func TestWrite(t *testing.T) {
 	// An init binary whose size isn't a multiple of 4 exercises padding.
-	initBinary := filepath.Join(t.TempDir(), "c2vm-init")
-	if err := os.WriteFile(initBinary, []byte("not really an ELF"), 0755); err != nil {
-		t.Fatal(err)
-	}
+	init := []byte("not really an ELF")
 	config := guest.Config{Args: []string{"nginx", "-g", "daemon off;"}, User: "nginx", Shutdown: guest.ShutdownPowerOff}
 
 	var buf bytes.Buffer
-	if err := Write(&buf, initBinary, config); err != nil {
+	if err := Write(&buf, init, config); err != nil {
 		t.Fatal(err)
 	}
 	entries := readCPIO(t, buf.Bytes())
@@ -118,12 +113,8 @@ func TestWriteSystemCPIO(t *testing.T) {
 		t.Skip("cpio not found")
 	}
 
-	initBinary := filepath.Join(t.TempDir(), "c2vm-init")
-	if err := os.WriteFile(initBinary, []byte("init"), 0755); err != nil {
-		t.Fatal(err)
-	}
 	var buf bytes.Buffer
-	if err := Write(&buf, initBinary, guest.Config{Args: []string{"true"}}); err != nil {
+	if err := Write(&buf, []byte("init"), guest.Config{Args: []string{"true"}}); err != nil {
 		t.Fatal(err)
 	}
 

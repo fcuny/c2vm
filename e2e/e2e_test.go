@@ -14,6 +14,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -43,7 +44,8 @@ const timeout = 2 * time.Minute
 var (
 	// skip is why the tests don't run, if they don't.
 	skip string
-	// c2vm and c2vmInit are the binaries built for the tests.
+	// c2vm and c2vmInit are the binaries built for the tests, c2vm with
+	// c2vmInit embedded.
 	c2vm, c2vmInit string
 	// bootArgs come first in every c2vm boot.
 	bootArgs []string
@@ -76,7 +78,6 @@ func testMain(m *testing.M) int {
 		return 1
 	}
 
-	bootArgs = []string{"-init", c2vmInit}
 	if kernel := os.Getenv("C2VM_E2E_KERNEL"); kernel != "" {
 		if err := checkKernel(kernel); err != nil {
 			fmt.Fprintf(os.Stderr, "C2VM_E2E_KERNEL: %v\n", err)
@@ -123,16 +124,31 @@ func checkKernel(kernel string) error {
 	return nil
 }
 
-// build builds c2vm and c2vm-init as make build does: c2vm signed with
-// the entitlement to create VMs, and c2vm-init for Linux, on arm64
-// whatever GOARCH says, as that's the only architecture VMs can run.
+// build builds c2vm as make build does, so the tests boot what ships:
+// c2vm-init for Linux on arm64, then c2vm with it embedded, signed with
+// the entitlement to create VMs. An overlay embeds c2vmInit from where
+// it's built, so the tests leave the checkout alone.
 func build(c2vm, c2vmInit string) error {
-	cmds := []*exec.Cmd{
-		exec.Command("go", "build", "-o", c2vm, "../cmd/c2vm"),
-		exec.Command("codesign", "--force", "--sign", "-", "--entitlements", "../hack/vz.entitlements", c2vm),
-		exec.Command("go", "build", "-o", c2vmInit, "../cmd/c2vm-init"),
+	dir := filepath.Dir(c2vm)
+	embedPath, err := filepath.Abs("../cmd/c2vm/c2vm-init")
+	if err != nil {
+		return err
 	}
-	cmds[2].Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH=arm64")
+	overlay, err := json.Marshal(map[string]map[string]string{"Replace": {embedPath: c2vmInit}})
+	if err != nil {
+		return err
+	}
+	overlayPath := filepath.Join(dir, "overlay.json")
+	if err := os.WriteFile(overlayPath, overlay, 0o644); err != nil {
+		return err
+	}
+
+	cmds := []*exec.Cmd{
+		exec.Command("go", "build", "-o", c2vmInit, "../cmd/c2vm-init"),
+		exec.Command("go", "build", "-tags", "embedinit", "-overlay", overlayPath, "-o", c2vm, "../cmd/c2vm"),
+		exec.Command("codesign", "--force", "--sign", "-", "--entitlements", "../hack/vz.entitlements", c2vm),
+	}
+	cmds[0].Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH=arm64")
 	for _, cmd := range cmds {
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("%s: %v\n%s", strings.Join(cmd.Args, " "), err, out)
@@ -224,6 +240,35 @@ func TestExitStatus(t *testing.T) {
 	_, code := boot(t, bootCmd(t, image, "--", "sh", "-c", "exit 3"))
 	if code != 3 {
 		t.Errorf("exit status %d, want 3", code)
+	}
+}
+
+// TestInitFlag boots the init given with -init rather than the one built
+// into c2vm. They're the same binary, so this checks the path to it.
+func TestInitFlag(t *testing.T) {
+	t.Parallel()
+	_, code := boot(t, bootCmd(t, "-init", c2vmInit, image, "--", "sh", "-c", "exit 3"))
+	if code != 3 {
+		t.Errorf("exit status %d, want 3", code)
+	}
+}
+
+// TestInitInvalid checks c2vm refuses an init the VM can't run, which
+// made the kernel panic and the VM hang.
+func TestInitInvalid(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "c2vm-init")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := bootCmd(t, "-init", path, image, "--", "true")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err == nil {
+		t.Fatal("c2vm boot succeeded with an init that isn't an ELF binary")
+	}
+	if !strings.Contains(stderr.String(), path+" is not an ELF binary") {
+		t.Errorf("stderr %q, want it to say %s is not an ELF binary", stderr.String(), path)
 	}
 }
 
