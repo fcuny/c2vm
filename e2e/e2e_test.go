@@ -131,8 +131,14 @@ func testMain(m *testing.M) int {
 	return m.Run()
 }
 
-// resolvedRE matches c2vm's log line for a reference it looked up.
-var resolvedRE = regexp.MustCompile(`(?m)^c2vm: resolved (\S+) to (sha256:[0-9a-f]{64})\r?$`)
+var (
+	// resolvedRE matches c2vm's log line for a reference it resolved,
+	// from the registry or from its cache.
+	resolvedRE = regexp.MustCompile(`(?m)^c2vm: resolved (\S+) to (sha256:[0-9a-f]{64})(?:, from the cache)?\r?$`)
+	// fallbackRE matches its line for a tag it couldn't look up, and
+	// boots by the digest it last resolved to.
+	fallbackRE = regexp.MustCompile(`(?m)^c2vm: using (sha256:[0-9a-f]{64}), which (\S+) resolved to on `)
+)
 
 // resolvedDigests returns the digest each reference c2vm looked up
 // resolved to, from what it logged.
@@ -140,6 +146,9 @@ func resolvedDigests(log string) map[string]string {
 	digests := map[string]string{}
 	for _, m := range resolvedRE.FindAllStringSubmatch(log, -1) {
 		digests[m[1]] = m[2]
+	}
+	for _, m := range fallbackRE.FindAllStringSubmatch(log, -1) {
+		digests[m[2]] = m[1]
 	}
 	return digests
 }
@@ -345,15 +354,26 @@ func TestOffline(t *testing.T) {
 }
 
 func TestResolvedDigests(t *testing.T) {
+	const kernel = "ghcr.io/fcuny/c2vm-kernel:7.3"
 	d1, d2 := "sha256:"+strings.Repeat("a", 64), "sha256:"+strings.Repeat("b", 64)
-	log := "c2vm: resolved ghcr.io/fcuny/c2vm-kernel:7.3 to " + d1 + "\n" +
-		"c2vm: using cached /cache/kernels/sha256-aaaa\n" +
-		"c2vm: resolved " + imageTag + " to " + d2 + "\r\n" +
-		"c2vm: resolved short to sha256:abc\n"
-	got := resolvedDigests(log)
-	want := map[string]string{"ghcr.io/fcuny/c2vm-kernel:7.3": d1, imageTag: d2}
-	if len(got) != len(want) || got["ghcr.io/fcuny/c2vm-kernel:7.3"] != d1 || got[imageTag] != d2 {
-		t.Errorf("resolvedDigests = %v, want %v", got, want)
+	for _, tt := range []struct {
+		name string
+		log  string
+	}{
+		{"looked up", "c2vm: resolved " + kernel + " to " + d1 + "\n" +
+			"c2vm: using cached /cache/kernels/sha256-aaaa\n" +
+			"c2vm: resolved " + imageTag + " to " + d2 + "\r\n" +
+			"c2vm: resolved short to sha256:abc\n"},
+		// The image's lookup failed: c2vm used what the tag resolved to
+		// before. The kernel's digest came from a record.
+		{"fallback", "c2vm: resolved " + kernel + " to " + d1 + ", from the cache\n" +
+			"c2vm: warning: failed to pull " + imageTag + ": TOOMANYREQUESTS: Rate exceeded\n" +
+			"c2vm: using " + d2 + ", which " + imageTag + " resolved to on 2026-11-03: it may be out of date\n"},
+	} {
+		got := resolvedDigests(tt.log)
+		if len(got) != 2 || got[kernel] != d1 || got[imageTag] != d2 {
+			t.Errorf("%s: resolvedDigests = %v, want %s: %s and %s: %s", tt.name, got, kernel, d1, imageTag, d2)
+		}
 	}
 }
 
