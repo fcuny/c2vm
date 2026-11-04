@@ -58,7 +58,8 @@ func resolve(ctx context.Context, c *cache.Cache, ref string, platform v1.Platfo
 
 	img, pullErr := image.Pull(ctx, ref, platform)
 	if pullErr != nil {
-		if !image.Transient(pullErr) {
+		// A pull that was stopped isn't the registry's doing.
+		if ctx.Err() != nil || !image.Transient(pullErr) {
 			return v1.Hash{}, nil, pullErr
 		}
 		rec, ok, err := c.Ref(r.Name(), platform)

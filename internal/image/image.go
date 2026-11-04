@@ -76,12 +76,14 @@ func (k anonymousFallback) Resolve(r authn.Resource) (authn.Authenticator, error
 }
 
 // Transient reports whether err, from Pull, says nothing about the image
-// itself: the registry couldn't be reached, refused the request for now
-// (429), or failed (5xx). Any other answer from the registry, like an
-// unknown manifest or a denied request, is about the image. A canceled
-// pull isn't transient either.
+// itself: the registry couldn't be reached, which includes any failure
+// to connect or talk TLS to it, refused the request for now (429), or
+// failed (5xx). Any other answer from the registry, like an unknown
+// manifest or a denied request, is about the image. A canceled pull
+// isn't transient either. A timeout is: net reports one as
+// context.DeadlineExceeded, though nothing set a deadline.
 func Transient(err error) bool {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.Canceled) {
 		return false
 	}
 	var terr *transport.Error

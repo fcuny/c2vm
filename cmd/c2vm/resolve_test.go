@@ -214,6 +214,24 @@ func TestResolveNoFallback(t *testing.T) {
 	}
 }
 
+// TestResolveCanceled checks a pull that was stopped doesn't fall back,
+// though the tag's record and files are there.
+func TestResolveCanceled(t *testing.T) {
+	reg := newFlakyRegistry(t)
+	c := cache.New(t.TempDir())
+	captureLog(t)
+	if err := c.SetRef(reg.tag, arm64, reg.digest); err != nil {
+		t.Fatal(err)
+	}
+	cacheFiles(t, c, reg.digest, "images")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := resolve(ctx, c, reg.tag, arm64, "images"); err == nil {
+		t.Error("resolve with a canceled context fell back to the cache")
+	}
+}
+
 func TestResolveDigest(t *testing.T) {
 	reg := newFlakyRegistry(t)
 	c := cache.New(t.TempDir())
