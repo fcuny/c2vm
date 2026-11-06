@@ -219,7 +219,8 @@ func build(c2vm, c2vmInit string) error {
 }
 
 // bootCmd returns the command to boot a VM with c2vm boot and args. It's
-// stopped, as with Ctrl-C, if it runs for longer than timeout.
+// stopped with SIGQUIT if it runs for longer than timeout, so its stderr
+// shows where it was stuck.
 func bootCmd(t *testing.T, args ...string) *exec.Cmd {
 	t.Helper()
 	if skip != "" {
@@ -232,7 +233,10 @@ func bootCmd(t *testing.T, args ...string) *exec.Cmd {
 	// The context also ends with the test: only a timeout is an error.
 	cmd.Cancel = func() error {
 		if ctx.Err() == context.DeadlineExceeded {
-			t.Errorf("c2vm still running after %v, stopping it", timeout)
+			t.Errorf("c2vm still running after %v, stopping it with SIGQUIT", timeout)
+			// Go prints every goroutine's stack and exits, without
+			// removing c2vm's files as SIGTERM would.
+			return cmd.Process.Signal(syscall.SIGQUIT)
 		}
 		return cmd.Process.Signal(syscall.SIGTERM)
 	}
@@ -553,8 +557,8 @@ func startTerminal(t *testing.T, cmd *exec.Cmd, size pty.Winsize) *terminal {
 	}()
 	t.Cleanup(func() {
 		// The test stopped before waiting for c2vm: its context is
-		// done, so it was sent SIGTERM, and is killed if it doesn't stop
-		// in time. Wait for it, not to leave it behind.
+		// done, so it was sent SIGTERM, or SIGQUIT past its timeout, and
+		// is killed if it doesn't stop in time. Wait for it, not to leave it behind.
 		if !term.waited {
 			cmd.Wait()
 		}
