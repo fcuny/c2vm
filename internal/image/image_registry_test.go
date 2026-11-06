@@ -129,7 +129,11 @@ func TestExtractFile(t *testing.T) {
 func TestConfigAndDigest(t *testing.T) {
 	img := pull(t, pushTestImage(t, layer(t, file{name: "hello", data: "#!"})))
 
-	config, err := img.Config()
+	raw, err := img.RawConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := ParseConfig(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
