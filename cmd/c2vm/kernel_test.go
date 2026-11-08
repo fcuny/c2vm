@@ -42,7 +42,7 @@ func TestResolveKernelFile(t *testing.T) {
 }
 
 func TestResolveKernelImage(t *testing.T) {
-	ref := pushKernelImage(t, "the kernel")
+	ref, _ := pushKernelImage(t, "the kernel")
 	cacheDir := t.TempDir()
 
 	path, err := resolveKernel(context.Background(), ref, cacheDir)
@@ -57,6 +57,34 @@ func TestResolveKernelImage(t *testing.T) {
 	}
 }
 
+// TestResolveKernelOffline checks a kernel booted by tag comes from the
+// cache, with a warning, when the registry is down.
+func TestResolveKernelOffline(t *testing.T) {
+	ref, srv := pushKernelImage(t, "the kernel")
+	logs := captureLog(t)
+	cacheDir := t.TempDir()
+
+	path, err := resolveKernel(context.Background(), ref, cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv.Close()
+	offlinePath, err := resolveKernel(context.Background(), ref, cacheDir)
+	if err != nil {
+		t.Fatalf("resolveKernel with the registry down: %v", err)
+	}
+	if offlinePath != path {
+		t.Errorf("kernel at %s, want %s", offlinePath, path)
+	}
+	if data, _ := os.ReadFile(offlinePath); string(data) != "the kernel" {
+		t.Errorf("kernel contains %q", data)
+	}
+	if !strings.Contains(logs.String(), "may be out of date") {
+		t.Errorf("no warning in the log:\n%s", logs)
+	}
+}
+
 func TestResolveKernelInvalid(t *testing.T) {
 	_, err := resolveKernel(context.Background(), "not a file:or an image", t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "neither a file nor a pullable image") {
@@ -65,8 +93,8 @@ func TestResolveKernelInvalid(t *testing.T) {
 }
 
 // pushKernelImage pushes a kernel image for the host's architecture to
-// an in-memory registry, and returns its reference.
-func pushKernelImage(t *testing.T, kernel string) string {
+// an in-memory registry, and returns its reference and the registry.
+func pushKernelImage(t *testing.T, kernel string) (string, *httptest.Server) {
 	t.Helper()
 	srv := httptest.NewServer(registry.New())
 	t.Cleanup(srv.Close)
@@ -106,5 +134,5 @@ func pushKernelImage(t *testing.T, kernel string) string {
 	if err := remote.Write(r, img); err != nil {
 		t.Fatal(err)
 	}
-	return ref
+	return ref, srv
 }
