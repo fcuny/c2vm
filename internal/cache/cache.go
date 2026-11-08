@@ -1,14 +1,19 @@
 // Package cache stores files c2vm derives from images, keyed by the
-// image's digest, so they're only built once.
+// image's digest, so they're only built once, and what each image
+// reference last resolved to.
 package cache
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/renameio/v2"
@@ -67,4 +72,55 @@ func (c *Cache) Get(kind string, digest v1.Hash, create func(w io.ReadWriteSeeke
 		return "", false, err
 	}
 	return path, false, nil
+}
+
+// Has reports whether the file of the given kind for digest is cached.
+func (c *Cache) Has(kind string, digest v1.Hash) bool {
+	_, err := os.Stat(c.Path(kind, digest))
+	return err == nil
+}
+
+// Ref is what an image reference resolved to, for a platform, the last
+// time the registry was asked.
+type Ref struct {
+	Name     string    `json:"name"`
+	Platform string    `json:"platform"`
+	Digest   v1.Hash   `json:"digest"`
+	Resolved time.Time `json:"resolved"`
+}
+
+// refPath is where the Ref for name and platform is stored.
+func (c *Cache) refPath(name string, platform v1.Platform) string {
+	key := sha256.Sum256([]byte(name + "\x00" + platform.String()))
+	return filepath.Join(c.dir, "refs", hex.EncodeToString(key[:])+".json")
+}
+
+// Ref returns what name last resolved to for platform, and false if
+// that wasn't recorded.
+func (c *Cache) Ref(name string, platform v1.Platform) (Ref, bool, error) {
+	path := c.refPath(name, platform)
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return Ref{}, false, nil
+	} else if err != nil {
+		return Ref{}, false, err
+	}
+	var r Ref
+	if err := json.Unmarshal(data, &r); err != nil {
+		return Ref{}, false, fmt.Errorf("%s: %w", path, err)
+	}
+	return r, true, nil
+}
+
+// SetRef records that name resolved to digest for platform, now.
+func (c *Cache) SetRef(name string, platform v1.Platform, digest v1.Hash) error {
+	data, err := json.Marshal(Ref{Name: name, Platform: platform.String(), Digest: digest, Resolved: time.Now()})
+	if err != nil {
+		return err
+	}
+	path := c.refPath(name, platform)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return renameio.WriteFile(path, data, 0o644)
 }
