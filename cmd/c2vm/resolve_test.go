@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/registry"
@@ -41,7 +42,16 @@ type flakyRegistry struct {
 	// failBlobs makes requests for blobs (layers and configs) fail, after
 	// the manifest was served.
 	failBlobs atomic.Bool
+	// hangManifests makes requests for manifests wait until the client
+	// gives up, as a registry that accepts the connection and never
+	// answers.
+	hangManifests atomic.Bool
+	// blobDelay delays the answer to requests for blobs.
+	blobDelay atomic.Int64
 	requests  atomic.Int32
+	// manifestRequests and blobRequests count requests by what they ask
+	// for.
+	manifestRequests, blobRequests atomic.Int32
 }
 
 func newFlakyRegistry(t *testing.T) *flakyRegistry {
@@ -51,6 +61,17 @@ func newFlakyRegistry(t *testing.T) *flakyRegistry {
 	backend := registry.New()
 	reg.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reg.requests.Add(1)
+		switch {
+		case strings.Contains(r.URL.Path, "/manifests/"):
+			reg.manifestRequests.Add(1)
+			if reg.hangManifests.Load() {
+				<-r.Context().Done()
+				return
+			}
+		case strings.Contains(r.URL.Path, "/blobs/"):
+			reg.blobRequests.Add(1)
+			time.Sleep(time.Duration(reg.blobDelay.Load()))
+		}
 		var code int
 		var errCode string
 		if fail := reg.fail.Load().(string); fail != "" && strings.Contains(r.URL.Path, "/manifests/") {
@@ -113,7 +134,17 @@ func newFlakyRegistry(t *testing.T) *flakyRegistry {
 		t.Fatal(err)
 	}
 	reg.requests.Store(0)
+	reg.manifestRequests.Store(0)
+	reg.blobRequests.Store(0)
 	return reg
+}
+
+// setLookupTimeout sets lookupTimeout until the test ends.
+func setLookupTimeout(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := lookupTimeout
+	lookupTimeout = d
+	t.Cleanup(func() { lookupTimeout = old })
 }
 
 // captureLog returns what's logged until the test ends.
@@ -164,10 +195,14 @@ func TestResolvePulls(t *testing.T) {
 func TestResolveFallback(t *testing.T) {
 	for _, tt := range []struct {
 		name string
-		down func(*flakyRegistry)
+		down func(*testing.T, *flakyRegistry)
 	}{
-		{"server error", func(reg *flakyRegistry) { reg.fail.Store("501 UNSUPPORTED") }},
-		{"unreachable", func(reg *flakyRegistry) { reg.srv.Close() }},
+		{"server error", func(t *testing.T, reg *flakyRegistry) { reg.fail.Store("501 UNSUPPORTED") }},
+		{"unreachable", func(t *testing.T, reg *flakyRegistry) { reg.srv.Close() }},
+		{"no answer", func(t *testing.T, reg *flakyRegistry) {
+			setLookupTimeout(t, 100*time.Millisecond)
+			reg.hangManifests.Store(true)
+		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			reg := newFlakyRegistry(t)
@@ -182,7 +217,7 @@ func TestResolveFallback(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			tt.down(reg)
+			tt.down(t, reg)
 			res, err = resolve(context.Background(), c, reg.tag, arm64, "images")
 			if err != nil {
 				t.Fatalf("resolve with the registry down: %v", err)
@@ -232,6 +267,65 @@ func TestResolveNoFallback(t *testing.T) {
 				t.Errorf("resolve = %v, want the registry's %s", err, code)
 			}
 		})
+	}
+}
+
+// TestResolveNoAnswer checks a lookup gives up on a registry that never
+// answers, once for all of go-containerregistry's retries, and says why.
+func TestResolveNoAnswer(t *testing.T) {
+	reg := newFlakyRegistry(t)
+	c := cache.New(t.TempDir())
+	captureLog(t)
+	setLookupTimeout(t, 100*time.Millisecond)
+	reg.hangManifests.Store(true)
+
+	_, err := resolve(context.Background(), c, reg.tag, arm64, "images")
+	if err == nil || !strings.Contains(err.Error(), "didn't answer within 100ms") {
+		t.Errorf("resolve = %v, want the lookup's timeout", err)
+	}
+	if n := reg.manifestRequests.Load(); n != 1 {
+		t.Errorf("resolve sent %d requests for manifests, want 1", n)
+	}
+}
+
+// TestResolveCached checks that when the lookup resolves to a digest
+// whose files are cached, nothing more is fetched, and the tag is still
+// recorded.
+func TestResolveCached(t *testing.T) {
+	reg := newFlakyRegistry(t)
+	c := cache.New(t.TempDir())
+	captureLog(t)
+	cacheFiles(t, c, reg.digest, "images")
+
+	res, err := resolve(context.Background(), c, reg.tag, arm64, "images")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.digest != reg.digest || res.img != nil {
+		t.Errorf("resolve = %v, %v; want %v from the cache", res.digest, res.img, reg.digest)
+	}
+	if m, b := reg.manifestRequests.Load(), reg.blobRequests.Load(); m != 1 || b != 0 {
+		t.Errorf("resolve sent %d requests for manifests and %d for blobs, want 1 and 0", m, b)
+	}
+	if err := res.record(); err != nil {
+		t.Fatal(err)
+	}
+	if rec, ok, err := c.Ref(reg.tag, arm64); !ok || err != nil || rec.Digest != reg.digest {
+		t.Errorf("record after a lookup: %+v, %v, %v", rec, ok, err)
+	}
+}
+
+// TestSlowPull checks the lookup's deadline doesn't cut off the pull
+// that follows it.
+func TestSlowPull(t *testing.T) {
+	reg := newFlakyRegistry(t)
+	captureLog(t)
+	setLookupTimeout(t, 100*time.Millisecond)
+	reg.blobDelay.Store(int64(300 * time.Millisecond))
+
+	opts := commonOptions{image: reg.tag, platform: arm64, cacheDir: t.TempDir()}
+	if _, _, err := pullImage(context.Background(), opts); err != nil {
+		t.Fatalf("pullImage with slow blobs: %v", err)
 	}
 }
 
