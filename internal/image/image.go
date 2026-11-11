@@ -31,32 +31,51 @@ type Image struct {
 	image v1.Image
 }
 
+// Lookup resolves ref to the digest of its manifest for the given
+// platform. It only fetches manifests, so ctx bounds all of it, unlike
+// Pull's.
+func Lookup(ctx context.Context, ref string, platform v1.Platform) (v1.Hash, error) {
+	r, err := name.ParseReference(ref)
+	if err != nil {
+		return v1.Hash{}, fmt.Errorf("invalid image reference %q: %w", ref, err)
+	}
+
+	img, err := remote.Image(r, options(ctx, platform)...)
+	if err != nil {
+		return v1.Hash{}, fmt.Errorf("failed to look up %s: %w", r, err)
+	}
+	digest, err := img.Digest()
+	if err != nil {
+		return v1.Hash{}, err
+	}
+	log.Printf("resolved %s to %s\n", r.Name(), digest)
+	return digest, nil
+}
+
 // Pull resolves ref for the given platform. ref can be a short name, as
 // with docker: "alpine" is docker.io/library/alpine:latest.
 // Credentials come from the docker and podman configurations, as with
-// `docker login` or `podman login`.
+// `docker login` or `podman login`. The image keeps ctx, to fetch its
+// configuration and layers when they're used.
 func Pull(ctx context.Context, ref string, platform v1.Platform) (*Image, error) {
 	r, err := name.ParseReference(ref)
 	if err != nil {
 		return nil, fmt.Errorf("invalid image reference %q: %w", ref, err)
 	}
 
-	img, err := remote.Image(r,
-		remote.WithContext(ctx),
-		remote.WithPlatform(platform),
-		remote.WithAuthFromKeychain(anonymousFallback{authn.DefaultKeychain}),
-	)
+	img, err := remote.Image(r, options(ctx, platform)...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to pull %s: %w", r, err)
 	}
-
-	digest, err := img.Digest()
-	if err != nil {
-		return nil, err
-	}
-	log.Printf("resolved %s to %s\n", r.Name(), digest)
-
 	return &Image{ref: r, image: img}, nil
+}
+
+func options(ctx context.Context, platform v1.Platform) []remote.Option {
+	return []remote.Option{
+		remote.WithContext(ctx),
+		remote.WithPlatform(platform),
+		remote.WithAuthFromKeychain(anonymousFallback{authn.DefaultKeychain}),
+	}
 }
 
 // anonymousFallback pulls anonymously when credentials can't be looked

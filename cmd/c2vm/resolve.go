@@ -28,9 +28,9 @@ type resolved struct {
 }
 
 // resolve resolves ref to the digest of its manifest for platform, and
-// returns the image it pulled. It skips the registry, and returns a nil
-// image, when the files of the given kinds are in c for the digest it
-// would resolve to:
+// returns the image it pulled. It returns a nil image, without pulling,
+// when the files of the given kinds are in c for the digest it resolves
+// to. It skips the registry entirely when:
 //
 //   - ref is a digest, which names the same image forever;
 //   - or the registry couldn't answer (see image.Transient), and ref is
@@ -71,7 +71,7 @@ func resolve(ctx context.Context, c *cache.Cache, ref string, platform v1.Platfo
 		}
 	}
 
-	img, pullErr := image.Pull(ctx, ref, platform)
+	res, pullErr := fromRegistry(ctx, r, platform, cached)
 	if pullErr != nil {
 		// A pull that was stopped isn't the registry's doing.
 		if ctx.Err() != nil || !image.Transient(pullErr) {
@@ -85,16 +85,37 @@ func resolve(ctx context.Context, c *cache.Cache, ref string, platform v1.Platfo
 		log.Printf("using %s, which %s resolved to on %s: it may be out of date\n", rec.Digest, r.Name(), rec.Resolved.Format(time.DateOnly))
 		return fromCache(rec.Digest), nil
 	}
+	res.record = func() error { return c.SetRef(r.Name(), platform, res.digest) }
+	return res, nil
+}
 
-	digest, err := img.Digest()
+// lookupTimeout bounds the lookup of a reference's digest. Without it,
+// a registry that accepts the connection and then never answers would
+// hang the boot, even with the image cached.
+var lookupTimeout = 30 * time.Second
+
+// fromRegistry looks r up within lookupTimeout, and pulls the digest it
+// resolves to unless cached says its files are there. The pull keeps
+// ctx, with no deadline, as a first pull can take long.
+func fromRegistry(ctx context.Context, r name.Reference, platform v1.Platform, cached func(v1.Hash) bool) (resolved, error) {
+	lookupCtx, cancel := context.WithTimeout(ctx, lookupTimeout)
+	defer cancel()
+	digest, err := image.Lookup(lookupCtx, r.Name(), platform)
+	if err != nil {
+		if ctx.Err() == nil && lookupCtx.Err() != nil {
+			err = fmt.Errorf("%s didn't answer within %s: %w", r.Context().RegistryStr(), lookupTimeout, err)
+		}
+		return resolved{}, err
+	}
+	if cached(digest) {
+		return resolved{digest: digest}, nil
+	}
+
+	img, err := image.Pull(ctx, r.Context().Digest(digest.String()).Name(), platform)
 	if err != nil {
 		return resolved{}, err
 	}
-	return resolved{
-		digest: digest,
-		img:    img,
-		record: func() error { return c.SetRef(r.Name(), platform, digest) },
-	}, nil
+	return resolved{digest: digest, img: img}, nil
 }
 
 // fromImage returns a cache.Get create function that writes a file from
