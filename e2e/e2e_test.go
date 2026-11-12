@@ -244,39 +244,40 @@ func bootCmd(t *testing.T, args ...string) *exec.Cmd {
 	return cmd
 }
 
-// boot runs cmd, from bootCmd, and returns what the VM printed on its
-// console, without init's messages, and c2vm's exit status.
+// boot runs cmd, from bootCmd, and returns what the command printed on
+// its console, and c2vm's exit status.
 func boot(t *testing.T, cmd *exec.Cmd) (string, int) {
+	t.Helper()
+	stdout, stderr, code := bootOutputs(t, cmd)
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("c2vm's stdout:\n%s\nc2vm's stderr:\n%s", stdout, stderr)
+		}
+	})
+	return commandOutput(stdout), code
+}
+
+// bootOutputs runs cmd, from bootCmd, and returns c2vm's stdout and
+// stderr, and its exit status.
+func bootOutputs(t *testing.T, cmd *exec.Cmd) (string, string, int) {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
-	t.Cleanup(func() {
-		if t.Failed() {
-			t.Logf("c2vm's console:\n%s\nc2vm's stderr:\n%s", stdout.String(), stderr.String())
-		}
-	})
 
 	var exit *exec.ExitError
 	if err != nil && !errors.As(err, &exit) {
 		t.Fatalf("running c2vm: %v", err)
 	}
-	return commandOutput(stdout.String()), cmd.ProcessState.ExitCode()
+	return stdout.String(), stderr.String(), cmd.ProcessState.ExitCode()
 }
 
-// commandOutput returns what the command printed on the console: out
-// without init's messages, and with \n line endings, which the console's
-// terminal turns into \r\n. A message follows the command's output on
-// the same line when that doesn't end with a newline.
+// commandOutput returns what the command printed on its console, with
+// \n line endings, which the console's terminal turns into \r\n. Init's
+// and the kernel's messages go to the kernel's console, and so to
+// c2vm's stderr: they aren't in out.
 func commandOutput(out string) string {
-	var b strings.Builder
-	for line := range strings.Lines(strings.ReplaceAll(out, "\r\n", "\n")) {
-		if before, _, found := strings.Cut(line, "c2vm-init: "); found {
-			line = before
-		}
-		b.WriteString(line)
-	}
-	return b.String()
+	return strings.ReplaceAll(out, "\r\n", "\n")
 }
 
 // hasLine reports whether line is one of out's lines.
@@ -315,6 +316,60 @@ func TestInitFlag(t *testing.T) {
 	_, code := boot(t, bootCmd(t, "-init", c2vmInit, image, "--", "sh", "-c", "exit 3"))
 	if code != 3 {
 		t.Errorf("exit status %d, want 3", code)
+	}
+}
+
+// TestKernelPanic checks a guest kernel panic fails the run, instead of
+// leaving the VM waiting forever, or rebooting and running the command
+// again.
+func TestKernelPanic(t *testing.T) {
+	t.Parallel()
+	// A hang ends with bootCmd's timeout, without the message.
+	stdout, stderr, code := bootOutputs(t, bootCmd(t, image, "--", "sh", "-c", "echo c > /proc/sysrq-trigger"))
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("c2vm's stdout:\n%s\nc2vm's stderr:\n%s", stdout, stderr)
+		}
+	})
+	if code == 0 {
+		t.Error("exit status 0, want non-zero")
+	}
+	if !strings.Contains(stderr, "c2vm: the guest kernel panicked") {
+		t.Error("stderr doesn't say the guest kernel panicked")
+	}
+	if !strings.Contains(stderr, "Kernel panic - not syncing: sysrq triggered crash") {
+		t.Error("stderr doesn't have the kernel's panic message")
+	}
+	if stdout != "" {
+		t.Errorf("stdout %q, want nothing: the kernel's messages go to stderr", stdout)
+	}
+}
+
+// TestCommandPrintsPanic checks the command's output can't pass for a
+// kernel panic: only the kernel's console is watched.
+func TestCommandPrintsPanic(t *testing.T) {
+	t.Parallel()
+	script := `echo "[    0.820843] Kernel panic - not syncing: not really"; ` +
+		`echo "---[ end Kernel panic - not syncing: not really ]---"; sleep 2; exit 7`
+	out, code := boot(t, bootCmd(t, image, "--", "sh", "-c", script))
+	if code != 7 {
+		t.Errorf("exit status %d, want 7", code)
+	}
+	if !strings.HasSuffix(out, "not really ]---\n") {
+		t.Errorf("output %q, want the command's whole output", out)
+	}
+}
+
+// TestPanicOnOops checks an oops panics the kernel: it kills the task
+// that hit it, and leaves the kernel in a state the run can't trust.
+func TestPanicOnOops(t *testing.T) {
+	t.Parallel()
+	out, code := boot(t, bootCmd(t, image, "--", "cat", "/proc/sys/kernel/panic_on_oops"))
+	if code != 0 {
+		t.Errorf("exit status %d, want 0", code)
+	}
+	if out != "1\n" {
+		t.Errorf("panic_on_oops is %q, want %q", out, "1\n")
 	}
 }
 

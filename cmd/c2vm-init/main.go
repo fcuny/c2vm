@@ -16,7 +16,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -114,9 +113,14 @@ func run(config guest.Config) (int, error) {
 	cmd.Args[0] = config.Args[0]
 	cmd.Env = env
 	cmd.Dir = dir
+	console, err := os.OpenFile(guest.CommandConsole, os.O_RDWR|unix.O_NOCTTY, 0)
+	if err != nil {
+		return 0, fmt.Errorf("opening the command's console: %w", err)
+	}
+	defer console.Close()
 	// Without a stdin, the command reads /dev/null, as with docker run
 	// without -i.
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	cmd.Stdout, cmd.Stderr = console, console
 	if config.Stdin && !config.TTY {
 		stdin, err := openStdin()
 		if err != nil {
@@ -133,16 +137,12 @@ func run(config guest.Config) (int, error) {
 		},
 	}
 	if config.TTY {
-		tty, err := openTerminal(config.Rows, config.Columns)
-		if err != nil {
-			return 0, err
-		}
-		defer tty.Close()
-		go followResizes(tty)
-		// The command leads a new session, with the console as its
+		setSize(int(console.Fd()), config.Rows, config.Columns)
+		go followResizes(console)
+		// The command leads a new session, with its console as its
 		// controlling terminal: the console's line discipline then
 		// turns ^C into SIGINT, ^Z into SIGTSTP, and so on.
-		cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, tty
+		cmd.Stdin = console
 		cmd.SysProcAttr.Setsid = true
 		cmd.SysProcAttr.Setctty = true
 		cmd.SysProcAttr.Ctty = 0
@@ -217,28 +217,6 @@ func setSize(fd int, rows, columns uint16) {
 	if err := unix.IoctlSetWinsize(fd, unix.TIOCSWINSZ, size); err != nil {
 		logf("setting the terminal's size: %v", err)
 	}
-}
-
-// openTerminal opens the console's device, and sets its size. The
-// kernel gives init /dev/console, which can't be a controlling terminal,
-// so it opens the terminal behind it, as busybox's cttyhack does.
-func openTerminal(rows, columns uint16) (*os.File, error) {
-	active, err := os.ReadFile("/sys/class/tty/console/active")
-	if err != nil {
-		return nil, fmt.Errorf("finding the console: %w", err)
-	}
-	// The last console listed is /dev/console.
-	names := strings.Fields(string(active))
-	if len(names) == 0 {
-		return nil, errors.New("finding the console: there is none")
-	}
-	tty, err := os.OpenFile("/dev/"+names[len(names)-1], os.O_RDWR|unix.O_NOCTTY, 0)
-	if err != nil {
-		return nil, err
-	}
-
-	setSize(int(tty.Fd()), rows, columns)
-	return tty, nil
 }
 
 // reap waits for every child, as PID 1 has to so orphans don't stay
@@ -431,8 +409,8 @@ func shutdown(how string) {
 	if err := unix.Reboot(cmd); err != nil {
 		logf("%s: %v", how, err)
 	}
-	// If that failed, returning from PID 1 panics the kernel, which with
-	// panic=1 also stops the VM.
+	// If that failed, returning from PID 1 panics the kernel: the host
+	// sees the panic on the kernel's console and stops the VM.
 	os.Exit(1)
 }
 

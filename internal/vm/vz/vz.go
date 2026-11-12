@@ -20,12 +20,14 @@ import (
 	"fcuny.net/c2vm/internal/vm"
 )
 
-// commandLine is the kernel's command line. The console is the virtio
-// console, and the network is configured with DHCP from
-// Virtualization.framework's NAT, which also provides a nameserver.
-// Kernel messages are left out so the console shows the command's
-// output; c2vm-init reports the VM's address.
-const commandLine = "console=hvc0 ip=dhcp quiet"
+// commandLine is the kernel's command line. The kernel's console is the
+// second virtio console, hvc1 (see guest.CommandConsole), and the
+// network is configured with DHCP from Virtualization.framework's NAT,
+// which also provides a nameserver. Kernel messages are left out, but
+// for errors; c2vm-init reports the VM's address. An oops panics the
+// kernel, and a panic leaves it waiting, whatever its configuration
+// says, for the host to see the panic on the console and stop the VM.
+const commandLine = "console=hvc1 ip=dhcp quiet oops=panic panic=0"
 
 // Backend runs VMs with Virtualization.framework.
 type Backend struct{}
@@ -43,7 +45,13 @@ func (b *Backend) Shutdown() string {
 	return guest.ShutdownPowerOff
 }
 
-func configuration(spec vm.Spec, input *os.File) (*vz.VirtualMachineConfiguration, error) {
+// serialPort is what a console reads its input from, and writes its
+// output to.
+type serialPort struct{ input, output *os.File }
+
+// configuration returns the VM's configuration, with the command's
+// console, hvc0, and the kernel's, hvc1.
+func configuration(spec vm.Spec, command, kernel serialPort) (*vz.VirtualMachineConfiguration, error) {
 	bootLoader, err := vz.NewLinuxBootLoader(spec.Kernel,
 		vz.WithCommandLine(commandLine),
 		vz.WithInitrd(spec.Initrd),
@@ -57,15 +65,20 @@ func configuration(spec vm.Spec, input *os.File) (*vz.VirtualMachineConfiguratio
 		return nil, err
 	}
 
-	console, err := vz.NewFileHandleSerialPortAttachment(input, os.Stdout)
-	if err != nil {
-		return nil, fmt.Errorf("console: %w", err)
+	// The guest names the consoles in this order.
+	var consoles []*vz.VirtioConsoleDeviceSerialPortConfiguration
+	for _, port := range []serialPort{command, kernel} {
+		attachment, err := vz.NewFileHandleSerialPortAttachment(port.input, port.output)
+		if err != nil {
+			return nil, fmt.Errorf("console: %w", err)
+		}
+		console, err := vz.NewVirtioConsoleDeviceSerialPortConfiguration(attachment)
+		if err != nil {
+			return nil, fmt.Errorf("console: %w", err)
+		}
+		consoles = append(consoles, console)
 	}
-	consoleConfig, err := vz.NewVirtioConsoleDeviceSerialPortConfiguration(console)
-	if err != nil {
-		return nil, fmt.Errorf("console: %w", err)
-	}
-	config.SetSerialPortsVirtualMachineConfiguration([]*vz.VirtioConsoleDeviceSerialPortConfiguration{consoleConfig})
+	config.SetSerialPortsVirtualMachineConfiguration(consoles)
 
 	disk, err := vz.NewDiskImageStorageDeviceAttachment(spec.Image, true)
 	if err != nil {
@@ -168,7 +181,15 @@ func (b *Backend) Run(ctx context.Context, spec vm.Spec) (int, error) {
 		input = r
 	}
 
-	config, err := configuration(spec, input)
+	// The kernel's console goes to stderr, with c2vm's messages.
+	console, err := watchConsole(waitWriter{int(os.Stderr.Fd())})
+	if err != nil {
+		return 0, err
+	}
+	// Once the VM has stopped, or failed to start.
+	defer console.drain()
+
+	config, err := configuration(spec, serialPort{input, os.Stdout}, console.port)
 	if err != nil {
 		return 0, err
 	}
@@ -221,6 +242,8 @@ func (b *Backend) Run(ctx context.Context, spec vm.Spec) (int, error) {
 	}
 
 	var interrupted syscall.Signal
+	var panicked bool
+	panics := console.panicked
 	states := machine.StateChangedNotify()
 	for {
 		select {
@@ -235,12 +258,27 @@ func (b *Backend) Run(ctx context.Context, spec vm.Spec) (int, error) {
 					return code, nil
 				default:
 				}
+				if panicked {
+					return 0, errors.New("the guest kernel panicked")
+				}
 				if interrupted != 0 {
 					return 128 + int(interrupted), nil
 				}
 				return 0, errors.New("the vm stopped without reporting the command's exit status")
 			case vz.VirtualMachineStateError:
 				return 0, errors.New("the vm stopped with an error")
+			}
+		case <-panics:
+			// The channel is closed: stop waiting on it.
+			panics = nil
+			panicked = true
+			// The VM may be stopping already, with the status sent.
+			if !machine.CanStop() {
+				continue
+			}
+			log.Print("the guest kernel panicked, stopping the vm")
+			if err := machine.Stop(); err != nil {
+				return 0, fmt.Errorf("failed to stop the vm: %w", err)
 			}
 		case sig := <-signals:
 			log.Print("stopping the vm")

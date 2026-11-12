@@ -59,7 +59,7 @@ func readFile(path string) ([]byte, error) {
 
 // checkInit checks that init is a static arm64 Linux executable, the
 // only kind the kernel can run as /init in the VM. Anything else makes it
-// panic, and the VM hangs rather than stops.
+// panic, which says less about what's wrong.
 func checkInit(init []byte) error {
 	f, err := elf.NewFile(bytes.NewReader(init))
 	if err != nil {
