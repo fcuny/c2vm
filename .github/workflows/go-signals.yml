@@ -1,0 +1,102 @@
+name: Go signals
+
+# Signals that a Go or dependency bump is needed or would break. These jobs
+# depend on the outside world (the vulnerability database, the latest Go
+# release, the latest module versions), so they stay out of go.yml and never
+# run on pull requests.
+#
+# Each job runs on Linux and macOS: the Virtualization.framework backend,
+# and so github.com/Code-Hex/vz, only builds on macOS, and c2vm-init only
+# builds for Linux.
+
+on:
+  schedule:
+    # The jobs below match on these strings, so change them together.
+    - cron: "23 6 * * *"
+    - cron: "47 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '23 6 * * *'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # The scanner can require a newer Go than go.mod names, so build it with
+      # stable.
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      # setup-go exports GOTOOLCHAIN=local, which would scan the standard
+      # library of the stable release. Override it to scan what go.mod selects.
+      # Verbose output names the standard library version that was scanned.
+      - name: Scan with the go.mod toolchain
+        run: |
+          toolchain=$(go mod edit -json | jq -r '.Toolchain // "go\(.Go)"')
+          GOTOOLCHAIN="$toolchain" govulncheck -show verbose ./...
+
+  latest-go:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '47 6 * * 1'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        go-line: [unchanged, raised]
+        deps: [locked, upgraded]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+
+      # The go line sets behaviour defaults through GODEBUG, so a newer
+      # toolchain alone keeps the old defaults.
+      - name: Raise the go line to the installed version
+        if: matrix.go-line == 'raised'
+        run: |
+          version=$(go env GOVERSION)
+          go mod edit -go="${version#go}"
+          grep '^go ' go.mod
+
+      # An upgraded module can require a newer go line than go.mod names, and
+      # go get raises it to match. The diff shows when that happens.
+      - name: Upgrade dependencies
+        if: matrix.deps == 'upgraded'
+        run: |
+          go get -u -t ./...
+          git diff go.mod
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      # As in go.yml: c2vm with c2vm-init embedded, which only make build
+      # builds.
+      - name: Build, with the init embedded
+        if: runner.os == 'macOS'
+        run: |
+          make build
+          go vet -tags embedinit ./...
+          go test -tags embedinit ./cmd/c2vm
