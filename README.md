@@ -41,7 +41,9 @@ make build
 ./c2vm boot nginx:stable-alpine3.24-perl
 ```
 
-The VM gets an address from Virtualization.framework's NAT, which `c2vm-init` prints when it starts (`c2vm-init: eth0: 192.168.64.30/24`); it's reachable from the Mac at that address. Ctrl-C stops it.
+The VM gets an address from Virtualization.framework's NAT, which `c2vm-init` prints on stderr when it starts (`c2vm-init: eth0: 192.168.64.30/24`); it's reachable from the Mac at that address. Ctrl-C stops it.
+
+The command's output goes to stdout. The kernel's messages and `c2vm-init`'s go to stderr, on a console of their own. If the guest kernel panics, c2vm stops the VM and fails with `the guest kernel panicked`.
 
 A command after `--` replaces the image's command, as with `docker run`; it's passed to the image's entrypoint, if it has one:
 
