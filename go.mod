@@ -1,6 +1,6 @@
 module fcuny.net/c2vm
 
-go 1.26.6
+go 1.27.4
 
 require (
 	github.com/Code-Hex/vz/v3 v3.8.0
@@ -19,7 +19,7 @@ require (
 	github.com/docker/cli v29.7.2+incompatible // indirect
 	github.com/docker/docker-credential-helpers v0.9.3 // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
-	github.com/klauspost/compress v1.20.0 // indirect
+	github.com/klauspost/compress v1.20.4 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/sirupsen/logrus v1.10.2 // indirect
