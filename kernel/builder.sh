@@ -39,6 +39,7 @@ apt-get install -qq -y --no-install-recommends \
 	make \
 	perl \
 	python3 \
+	sqv \
 	xz-utils \
 	> /dev/null
 
