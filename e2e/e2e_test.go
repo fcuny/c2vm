@@ -9,6 +9,7 @@
 package e2e
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -18,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -401,6 +403,106 @@ func TestOffline(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "may be out of date") {
 		t.Errorf("no warning that the image may be out of date:\n%s", stderr.String())
+	}
+}
+
+// printMAC is the command that prints the VM's MAC address.
+var printMAC = []string{"cat", "/sys/class/net/eth0/address"}
+
+// bootMAC boots a VM, with env added to c2vm's environment, and returns
+// its MAC address.
+func bootMAC(t *testing.T, env ...string) string {
+	t.Helper()
+	cmd := bootCmd(t, slices.Concat([]string{image, "--"}, printMAC)...)
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
+	out, code := boot(t, cmd)
+	if code != 0 {
+		t.Fatalf("exit status %d, want 0", code)
+	}
+	return strings.TrimSpace(out)
+}
+
+// TestMACReused checks a VM gets the MAC address of the VM before it,
+// and so its DHCP lease, rather than taking a new lease from vmnet's
+// pool on every boot. Its slots are its own, so that no other VM, from
+// this run of the tests or another, takes or frees one between the two
+// boots. With a new prefix, it takes one new lease per run.
+func TestMACReused(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	env := "C2VM_MAC_DIR=" + dir
+
+	first := bootMAC(t, env)
+	mac, err := net.ParseMAC(first)
+	if err != nil {
+		t.Fatalf("VM's MAC address %q: %v", first, err)
+	}
+	if mac[0]&0x02 == 0 || mac[0]&0x01 != 0 {
+		t.Errorf("VM's MAC address %s isn't locally administered and unicast", mac)
+	}
+	// Otherwise, c2vm didn't use the test's slots.
+	prefix, err := os.ReadFile(filepath.Join(dir, "prefix"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := strings.TrimSpace(string(prefix)) + ":00"; first != want {
+		t.Errorf("VM's MAC address is %s, want %s, the first slot's", first, want)
+	}
+
+	if second := bootMAC(t, env); second != first {
+		t.Errorf("second VM's MAC address is %s, want the first one's, %s", second, first)
+	}
+}
+
+// TestMACConcurrent checks two VMs that run at the same time get
+// different MAC addresses.
+func TestMACConcurrent(t *testing.T) {
+	t.Parallel()
+	// The first VM prints its MAC and waits for stdin to close, so it
+	// runs until the second one has stopped.
+	cmd := bootCmd(t, "-i", image, "--", "sh", "-c", strings.Join(printMAC, " ")+" && cat >/dev/null")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The test's own pipe, rather than StdoutPipe, for a read deadline:
+	// Virtualization.framework's VM process gets the write end too, and
+	// may keep it open after c2vm has stopped, so neither bootCmd's
+	// timeout nor WaitDelay would end a blocked read.
+	stdout, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdout.Close()
+	cmd.Stdout = w
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err = cmd.Start()
+	w.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stdout.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		t.Fatal(err)
+	}
+	first, err := bufio.NewReader(stdout).ReadString('\n')
+	if err != nil {
+		stdin.Close()
+		cmd.Wait()
+		t.Fatalf("reading the first VM's MAC address: %v\nc2vm's stderr:\n%s", err, stderr.String())
+	}
+	first = strings.TrimSpace(first)
+
+	second := bootMAC(t)
+
+	stdin.Close()
+	if err := cmd.Wait(); err != nil {
+		t.Errorf("first VM: %v\nc2vm's stderr:\n%s", err, stderr.String())
+	}
+	if first == second {
+		t.Errorf("both VMs have the MAC address %s", first)
 	}
 }
 
