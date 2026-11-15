@@ -9,7 +9,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"fcuny.net/c2vm/internal/guest"
 )
+
+// withProtocol returns init with guest.Protocol in it, as a c2vm-init
+// built with c2vm has.
+func withProtocol(init []byte) []byte {
+	return append(init, guest.Protocol...)
+}
 
 // fakeELF returns the headers of a 64-bit little-endian ELF file, with
 // a PT_INTERP program header if interp is set: enough for debug/elf.
@@ -93,7 +101,14 @@ func TestLoadInit(t *testing.T) {
 		t.Errorf("amd64 init built in: error = %v", err)
 	}
 
+	// An init from before the protocol check, or built from another
+	// tree, would lose the command's output.
 	embeddedInit = fakeELF(elf.ELFCLASS64, elf.ET_EXEC, elf.EM_AARCH64, false)
+	if _, err := loadInit(""); err == nil || !strings.Contains(err.Error(), "built into c2vm doesn't speak") {
+		t.Errorf("init built in without the protocol: error = %v", err)
+	}
+
+	embeddedInit = withProtocol(fakeELF(elf.ELFCLASS64, elf.ET_EXEC, elf.EM_AARCH64, false))
 	if got, err := loadInit(""); err != nil || len(got) != len(embeddedInit) {
 		t.Errorf("init built in: %d bytes, error %v", len(got), err)
 	}
@@ -115,9 +130,17 @@ func TestLoadInit(t *testing.T) {
 		t.Errorf("-init not an ELF: error = %v", err)
 	}
 
+	// An -init without the protocol is refused.
+	if err := os.WriteFile(path, fakeELF(elf.ELFCLASS64, elf.ET_DYN, elf.EM_AARCH64, false), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadInit(path); err == nil || !strings.Contains(err.Error(), path+" doesn't speak") {
+		t.Errorf("-init without the protocol: error = %v", err)
+	}
+
 	// A valid -init is booted rather than the init built in, which it
 	// differs from.
-	want := fakeELF(elf.ELFCLASS64, elf.ET_DYN, elf.EM_AARCH64, false)
+	want := withProtocol(fakeELF(elf.ELFCLASS64, elf.ET_DYN, elf.EM_AARCH64, false))
 	if err := os.WriteFile(path, want, 0o755); err != nil {
 		t.Fatal(err)
 	}

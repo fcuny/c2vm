@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"syscall"
+
+	"fcuny.net/c2vm/internal/guest"
 )
 
 // errNoInit is loadInit's error when c2vm has no c2vm-init built in, as
@@ -24,6 +26,9 @@ func loadInit(path string) ([]byte, error) {
 		if err := checkInit(embeddedInit); err != nil {
 			return nil, fmt.Errorf("the c2vm-init built into c2vm %w", err)
 		}
+		if err := checkProtocol(embeddedInit); err != nil {
+			return nil, fmt.Errorf("the c2vm-init built into c2vm %w", err)
+		}
 		return embeddedInit, nil
 	}
 
@@ -34,7 +39,21 @@ func loadInit(path string) ([]byte, error) {
 	if err := checkInit(init); err != nil {
 		return nil, fmt.Errorf("%s %w", path, err)
 	}
+	if err := checkProtocol(init); err != nil {
+		return nil, fmt.Errorf("%s %w", path, err)
+	}
 	return init, nil
+}
+
+// checkProtocol checks that init talks to c2vm the way c2vm expects: an
+// init built apart from it may send the command's output where c2vm
+// doesn't read it, or an exit status it can't parse. Init has
+// guest.Protocol in its binary, as it checks the configuration for it.
+func checkProtocol(init []byte) error {
+	if !bytes.Contains(init, []byte(guest.Protocol)) {
+		return fmt.Errorf("doesn't speak %q: build it with this c2vm, with make build", guest.Protocol)
+	}
+	return nil
 }
 
 // readFile reads the regular file at path. It opens it without blocking,

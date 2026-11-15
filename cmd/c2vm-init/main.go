@@ -11,6 +11,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -35,70 +36,90 @@ func main() {
 		logf("%v", err)
 		shutdown(guest.ShutdownReboot)
 	}
+	if config.Protocol != guest.Protocol {
+		// c2vm checks the init it boots, unless it's older than that
+		// check.
+		logf("this c2vm-init speaks %q, and c2vm %q: boot the c2vm-init built with c2vm", guest.Protocol, config.Protocol)
+		shutdown(config.Shutdown)
+	}
 
-	code, err := run(config)
+	// The connections for the command's outputs stay open until the host
+	// has acknowledged the status: closing them could lose what's still
+	// on its way.
+	var conns []*os.File
+	status, err := run(config, &conns)
 	if err != nil {
 		logf("%v", err)
-		code = 1
+		status.Code = 1
 	}
-	logf("exiting with status %d, shutting down", code)
-	if err := reportStatus(code); err != nil {
+	logf("exiting with status %d, shutting down", status.Code)
+	if err := reportStatus(status); err != nil {
 		logf("reporting the exit status: %v", err)
+	}
+	for _, conn := range conns {
+		conn.Close()
 	}
 	shutdown(config.Shutdown)
 }
 
 // reportStatus sends the command's exit status to the host over vsock.
-// It then waits, briefly, for the host to close the connection, so the
-// status is read before the VM stops.
-func reportStatus(code int) error {
+// It then waits for the host to close the connection, which it does once
+// it has written the command's output, so that's written and the status
+// read before the VM stops. That has no time limit: if the host's stdout
+// is blocked, so is init, as a process writing to a full pipe would be.
+func reportStatus(status guest.Status) error {
 	fd, err := dialHost(guest.StatusPort)
 	if err != nil {
 		return err
 	}
 	defer unix.Close(fd)
 
-	if _, err := unix.Write(fd, guest.EncodeStatus(code)); err != nil {
+	if _, err := unix.Write(fd, guest.EncodeStatus(status)); err != nil {
 		return fmt.Errorf("write: %w", err)
 	}
 
-	timeout := unix.NsecToTimeval(time.Second.Nanoseconds())
-	if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &timeout); err != nil {
-		return err
-	}
 	var buf [1]byte
-	if _, err := unix.Read(fd, buf[:]); err != nil {
-		return fmt.Errorf("waiting for the host: %w", err)
+	for {
+		_, err := unix.Read(fd, buf[:])
+		if errors.Is(err, unix.EINTR) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("waiting for the host: %w", err)
+		}
+		return nil
 	}
-	return nil
 }
 
-func run(config guest.Config) (int, error) {
+// run runs the command, and returns its exit status. Without -t, it
+// adds the connections for the command's outputs to conns, and the
+// status says how many bytes it sent on them, even if it fails.
+func run(config guest.Config, conns *[]*os.File) (status guest.Status, err error) {
 	if err := switchRoot(); err != nil {
-		return 0, err
+		return status, err
 	}
 
 	mountFilesystems()
 	if err := mountShares(config.Mounts); err != nil {
-		return 0, err
+		return status, err
 	}
 	linkDevices()
 	logAddresses()
 
 	if err := guest.SetupEtc("/"); err != nil {
-		return 0, fmt.Errorf("setting up /etc: %w", err)
+		return status, fmt.Errorf("setting up /etc: %w", err)
 	}
 
 	cred, err := guest.LookupUser("/", config.User)
 	if err != nil {
-		return 0, err
+		return status, err
 	}
 
 	env := guest.Environ(config.Env, cred.Home)
 	path, _ := guest.Getenv(env, "PATH")
 	argv0, err := guest.LookPath(config.Args[0], path)
 	if err != nil {
-		return 0, err
+		return status, err
 	}
 
 	dir := config.WorkingDir
@@ -106,29 +127,13 @@ func run(config guest.Config) (int, error) {
 		dir = "/"
 	}
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return 0, err
+		return status, err
 	}
 
 	cmd := exec.Command(argv0, config.Args[1:]...)
 	cmd.Args[0] = config.Args[0]
 	cmd.Env = env
 	cmd.Dir = dir
-	console, err := os.OpenFile(guest.CommandConsole, os.O_RDWR|unix.O_NOCTTY, 0)
-	if err != nil {
-		return 0, fmt.Errorf("opening the command's console: %w", err)
-	}
-	defer console.Close()
-	// Without a stdin, the command reads /dev/null, as with docker run
-	// without -i.
-	cmd.Stdout, cmd.Stderr = console, console
-	if config.Stdin && !config.TTY {
-		stdin, err := openStdin()
-		if err != nil {
-			return 0, err
-		}
-		defer stdin.Close()
-		cmd.Stdin = stdin
-	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Credential: &syscall.Credential{
 			Uid:    cred.UID,
@@ -136,16 +141,65 @@ func run(config guest.Config) (int, error) {
 			Groups: cred.Groups,
 		},
 	}
+	// The command's ends of its outputs, which init closes once the
+	// command has them.
+	var outputs []*os.File
 	if config.TTY {
+		console, err := os.OpenFile(guest.CommandConsole, os.O_RDWR|unix.O_NOCTTY, 0)
+		if err != nil {
+			return status, fmt.Errorf("opening the command's console: %w", err)
+		}
+		defer console.Close()
 		setSize(int(console.Fd()), config.Rows, config.Columns)
 		go followResizes(console)
 		// The command leads a new session, with its console as its
 		// controlling terminal: the console's line discipline then
 		// turns ^C into SIGINT, ^Z into SIGTSTP, and so on.
-		cmd.Stdin = console
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = console, console, console
 		cmd.SysProcAttr.Setsid = true
 		cmd.SysProcAttr.Setctty = true
 		cmd.SysProcAttr.Ctty = 0
+	} else {
+		// stdout and stderr go to the host's separately, byte for byte.
+		for _, o := range []struct {
+			port uint32
+			dst  *io.Writer
+			sent *int64
+		}{
+			{guest.StdoutPort, &cmd.Stdout, &status.Stdout},
+			{guest.StderrPort, &cmd.Stderr, &status.Stderr},
+		} {
+			conn, err := dialOutput(o.port)
+			if err != nil {
+				return status, err
+			}
+			*conns = append(*conns, conn)
+			output, w, err := guest.NewOutput(conn)
+			if err != nil {
+				return status, err
+			}
+			// Once the command has exited, or failed to start, for the
+			// status to say how much of its output there is.
+			defer func() {
+				sent, err := output.Finish()
+				if err != nil {
+					logf("passing the command's output: %v", err)
+				}
+				*o.sent = sent
+			}()
+			defer w.Close()
+			*o.dst = w
+			outputs = append(outputs, w)
+		}
+		// Without -i, the command reads /dev/null, as with docker run.
+		if config.Stdin {
+			stdin, err := openStdin()
+			if err != nil {
+				return status, err
+			}
+			defer stdin.Close()
+			cmd.Stdin = stdin
+		}
 	}
 
 	// Forward the signals we get to the command, as a container runtime
@@ -154,7 +208,12 @@ func run(config guest.Config) (int, error) {
 	signal.Notify(signals, unix.SIGTERM, unix.SIGINT, unix.SIGHUP, unix.SIGQUIT, unix.SIGUSR1, unix.SIGUSR2)
 
 	if err := cmd.Start(); err != nil {
-		return 0, err
+		return status, err
+	}
+	// The pipes end once the command, and whatever it leaves behind, have
+	// closed their ends.
+	for _, w := range outputs {
+		w.Close()
 	}
 
 	go func() {
@@ -163,7 +222,8 @@ func run(config guest.Config) (int, error) {
 		}
 	}()
 
-	return reap(cmd.Process.Pid)
+	status.Code, err = reap(cmd.Process.Pid)
+	return status, err
 }
 
 // dialHost connects to port on the host, over vsock.
@@ -187,6 +247,16 @@ func openStdin() (*os.File, error) {
 		return nil, fmt.Errorf("connecting stdin: %w", err)
 	}
 	return os.NewFile(uintptr(fd), "stdin"), nil
+}
+
+// dialOutput connects to port on the host, for one of the command's
+// outputs.
+func dialOutput(port uint32) (*os.File, error) {
+	fd, err := dialHost(port)
+	if err != nil {
+		return nil, fmt.Errorf("connecting the command's output: %w", err)
+	}
+	return os.NewFile(uintptr(fd), "vsock"), nil
 }
 
 // followResizes sets the terminal's size whenever the host's changes.

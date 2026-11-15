@@ -148,6 +148,19 @@ func (c *console) drain() {
 	})
 }
 
+// lockedWriter writes to w for more than one goroutine, one write at a
+// time, so one's write isn't split by another's.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (w *lockedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.w.Write(p)
+}
+
 // waitWriter writes to fd, and waits when it's full instead of failing:
 // on a terminal, stdin, stdout and stderr usually share one file
 // description, which nonblockingInput and Virtualization.framework make

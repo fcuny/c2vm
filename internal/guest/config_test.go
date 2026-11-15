@@ -25,6 +25,9 @@ func TestFromImage(t *testing.T) {
 	if want := []string{"/docker-entrypoint.sh", "nginx", "-g", "daemon off;"}; !slices.Equal(c.Args, want) {
 		t.Errorf("args = %q, want %q", c.Args, want)
 	}
+	if c.Protocol != Protocol {
+		t.Errorf("protocol = %q, want %q", c.Protocol, Protocol)
+	}
 	if c.WorkingDir != "/srv" || c.User != "nginx" {
 		t.Errorf("unexpected config: %+v", c)
 	}
@@ -40,6 +43,7 @@ func TestConfigRoundTrip(t *testing.T) {
 	// Every field is set, so one that doesn't survive the trip to init,
 	// e.g. with a mistyped JSON name, is caught.
 	want := Config{
+		Protocol:   Protocol,
 		Args:       []string{"sh", "-c", "echo 'hi'"},
 		Env:        []string{"A=b c"},
 		WorkingDir: "/w",
