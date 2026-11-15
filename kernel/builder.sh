@@ -31,6 +31,7 @@ apt-get install -qq -y --no-install-recommends \
 	bison \
 	ca-certificates \
 	curl \
+	e2fsprogs \
 	flex \
 	gcc \
 	libc6-dev \

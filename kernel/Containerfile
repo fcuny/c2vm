@@ -1,5 +1,6 @@
-# Packages kernels built by build.sh as an image, one per platform:
-# /boot/kernel and the config it was built with in /boot/config.
+# Packages what build.sh builds as an image, one per platform:
+# /boot/kernel, the config it was built with in /boot/config, and a
+# static mke2fs in /sbin/mkfs.ext4.
 FROM scratch
 ARG TARGETARCH
-COPY out/${TARGETARCH}/ /boot/
+COPY out/${TARGETARCH}/ /

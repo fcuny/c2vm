@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# Shared by build.sh and update.sh, which source it.
+# Shared by build.sh, update.sh and update-e2fsprogs.sh, which source it.
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 fragment=$here/configs/c2vm.fragment
@@ -16,60 +16,102 @@ series_of() {
 downloads=$here/downloads
 # The checksum of VERSION's tarball: update.sh writes it once it has
 # checked the release's signature, and build.sh checks the tarball
-# against it.
+# against it. e2fsprogs/ has the same for e2fsprogs, which
+# update-e2fsprogs.sh writes.
 # shellcheck disable=SC2034 # used by build.sh and update.sh
 checksum=$here/SHA256
+# shellcheck disable=SC2034 # used by build.sh and update-e2fsprogs.sh
+e2fsprogs=$here/e2fsprogs
 
-# kernel_url <version> <file>: where kernel.org has a release's file.
-kernel_url() {
-	echo "https://cdn.kernel.org/pub/linux/kernel/v${1%%.*}.x/$2"
+# The functions below take a project, linux or e2fsprogs: both are
+# released on kernel.org, as <project>-<version>.tar.xz, with a signature
+# over the uncompressed tarball, <project>-<version>.tar.sign.
+
+# url <project> <version> <file>: where kernel.org has a release's file.
+url() {
+	case $1 in
+	linux) echo "https://cdn.kernel.org/pub/linux/kernel/v${2%%.*}.x/$3" ;;
+	e2fsprogs) echo "https://cdn.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v$2/$3" ;;
+	*)
+		echo "unknown project $1" >&2
+		return 1
+		;;
+	esac
 }
 
-# download <version>: downloads the release's tarball to downloads/,
-# unless it's already there (e.g. a build and an update in the same CI
-# job), and prints its name there.
+# download <project> <version>: downloads the release's tarball to
+# downloads/, unless it's already there (e.g. a build and an update in
+# the same CI job), and prints its name there.
+#
+# Here and in verify, failures return explicitly: callers run them in a
+# command substitution, where set -e doesn't apply, and a failed
+# download would otherwise show up as a bad signature or checksum.
 download() {
-	local tarball=linux-$1.tar.xz
+	local tarball=$1-$2.tar.xz
+	local from
+	from=$(url "$1" "$2" "$tarball") || return
 	mkdir -p "$downloads"
 	if [[ ! -f $downloads/$tarball ]]; then
 		echo "downloading $tarball" >&2
-		curl -fsSL --retry 3 -o "$downloads/$tarball.part" "$(kernel_url "$1" "$tarball")"
+		curl -fsSL --retry 3 -o "$downloads/$tarball.part" "$from" || return
 		mv "$downloads/$tarball.part" "$downloads/$tarball"
 	fi
 	echo "$tarball"
 }
 
-# verify <version> <dir>: checks the release's signature, with the keys
-# in keys/, and prints its tarball's checksum, in sha256sum's format.
-# The signature is over the uncompressed tarball: kernel.org compresses
-# it after the upload. It goes in <dir>.
+# verify <project> <version> <dir>: checks the release's signature, with
+# the keys in keys/<project>/ only, and prints its tarball's checksum, in
+# sha256sum's format. The signature goes in <dir>.
 verify() {
-	local version=$1 dir=$2
-	local tarball keyrings=() key
-	tarball=$(download "$version")
-	curl -fsSL --retry 3 -o "$dir/linux-$version.tar.sign" \
-		"$(kernel_url "$version" "linux-$version.tar.sign")"
-	for key in "$here"/keys/*.asc; do
-		keyrings+=(--keyring "$key")
+	local project=$1 version=$2 dir=$3
+	local tarball sign=$1-$2.tar.sign keyrings=() key
+	# Before the download: without keys, sqv would fail as if the
+	# release were signed with another key.
+	for key in "$here/keys/$project"/*.asc; do
+		if [[ -f $key ]]; then
+			keyrings+=(--keyring "$key")
+		fi
 	done
+	if [[ ${#keyrings[@]} -eq 0 ]]; then
+		echo "no keys in kernel/keys/$project/" >&2
+		return 1
+	fi
+	tarball=$(download "$project" "$version") || return
+	local from
+	from=$(url "$project" "$version" "$sign") || return
+	curl -fsSL --retry 3 -o "$dir/$sign" "$from" || return
 	# sqv reads stdin from /dev/stdin, not -.
 	if ! xz -dc "$downloads/$tarball" |
-		sqv "${keyrings[@]}" --signature-file "$dir/linux-$version.tar.sign" /dev/stdin > /dev/null; then
+		sqv "${keyrings[@]}" --signature-file "$dir/$sign" /dev/stdin > /dev/null; then
 		rm -f "$downloads/$tarball"
-		echo "couldn't verify linux-$version.tar.sign with kernel/keys/: removed $tarball." >&2
+		echo "couldn't verify $sign with kernel/keys/$project/: removed $tarball." >&2
 		echo "If it's signed with a key that isn't there, check that key and add it (see kernel/README.md)." >&2
 		return 1
 	fi
 	(cd "$downloads" && sha256sum "$tarball")
 }
 
-# fetch <version> <dir> <checksum>: checks the release's tarball against
-# <checksum>, in sha256sum's format, and extracts it in
-# <dir>/linux-<version>.
+# pinned <file> <project> <version> <update script>: prints the checksum
+# in <file>, which the update script writes, if it's for the release's
+# tarball, and fails otherwise.
+pinned() {
+	local file=$1 project=$2 version=$3 update=$4
+	local sum
+	sum=$(cat "$file" 2> /dev/null) || true
+	if [[ ${sum##* } != "$project-$version.tar.xz" ]]; then
+		echo "${file#"$here"/} isn't for $project $version: run $update $version" >&2
+		return 1
+	fi
+	echo "$sum"
+}
+
+# fetch <project> <version> <dir> <checksum>: checks the release's
+# tarball against <checksum>, in sha256sum's format, and extracts it in
+# <dir>/<project>-<version>.
 fetch() {
-	local version=$1 dir=$2 want=$3
+	local project=$1 version=$2 dir=$3 want=$4
 	local tarball
-	tarball=$(download "$version")
+	tarball=$(download "$project" "$version")
 	if [[ $(cd "$downloads" && sha256sum "$tarball") != "$want" ]]; then
 		rm -f "$downloads/$tarball"
 		echo "$tarball doesn't match its checksum: removed it" >&2
