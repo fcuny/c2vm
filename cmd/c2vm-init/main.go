@@ -211,6 +211,10 @@ func run(config guest.Config, conns *[]*os.File) (status guest.Status, err error
 	if err := cmd.Start(); err != nil {
 		return status, err
 	}
+	// Deferred after the Finishes, so it runs before them on every path:
+	// they read the pipes to their end, which comes once every process
+	// holding them is gone.
+	defer killLeftovers()
 	// The pipes end once the command, and whatever it leaves behind, have
 	// closed their ends.
 	for _, w := range outputs {
@@ -309,6 +313,36 @@ func reap(pid int) (int, error) {
 			return 128 + int(status.Signal()), nil
 		}
 		return status.ExitStatus(), nil
+	}
+}
+
+// killLeftovers kills the processes the command left behind, and reaps
+// them, as the kernel does in a container once its main process exits:
+// SIGKILL, with no grace period. Once it returns, nothing writes to the
+// command's outputs or to the volumes anymore.
+//
+// It kills again before each wait, so a process forked as the first
+// SIGKILL went out doesn't survive. It stops on ECHILD, not on kill's
+// ESRCH: from PID 1, kill(-1) also reaches kernel threads, which ignore
+// the signal, so it never fails. A process in uninterruptible sleep, e.g.
+// writing to a volume the host doesn't answer for, dies only once it
+// leaves it, and init waits for it.
+func killLeftovers() {
+	for {
+		if err := unix.Kill(-1, unix.SIGKILL); err != nil && !errors.Is(err, unix.ESRCH) {
+			logf("killing the processes left behind: %v", err)
+		}
+		_, err := unix.Wait4(-1, nil, 0, nil)
+		if errors.Is(err, unix.EINTR) {
+			continue
+		}
+		if errors.Is(err, unix.ECHILD) {
+			return
+		}
+		if err != nil {
+			logf("reaping the processes left behind: %v", err)
+			return
+		}
 	}
 }
 

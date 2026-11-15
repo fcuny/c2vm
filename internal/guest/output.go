@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -30,10 +29,9 @@ type Output struct {
 	done chan struct{}
 	// sent is how many bytes were written to conn.
 	sent int64
-	// hostGone is set when the copy stopped because the host closed
-	// conn, and err when it stopped on an error.
-	hostGone bool
-	err      error
+	// err is set when the copy stopped on an error. The host closing
+	// conn isn't one.
+	err error
 }
 
 // NewOutput starts copying what's written to the returned pipe's write
@@ -61,9 +59,7 @@ func (o *Output) copy() {
 		n, err := o.r.Read(buf)
 		if n > 0 {
 			if werr := o.send(buf[:n]); werr != nil {
-				if errors.Is(werr, errHostGone) {
-					o.hostGone = true
-				} else {
+				if !errors.Is(werr, errHostGone) {
 					o.err = werr
 				}
 				o.r.Close()
@@ -71,7 +67,7 @@ func (o *Output) copy() {
 			}
 		}
 		if err != nil {
-			if !errors.Is(err, io.EOF) && !errors.Is(err, os.ErrDeadlineExceeded) {
+			if !errors.Is(err, io.EOF) {
 				o.err = fmt.Errorf("reading the command's output: %w", err)
 			}
 			return
@@ -94,61 +90,16 @@ func (o *Output) send(p []byte) error {
 	return nil
 }
 
-// Finish sends what's left of the command's output, and returns how
-// many bytes were sent in all, for the host to know when it has them.
-// Call it once the command has exited: processes it left in the
-// background may still hold the pipe's write end, so the pipe doesn't
-// end on its own. Once Finish returns, they get SIGPIPE if they write
-// to it.
+// Finish waits for the copy to reach the pipe's end, and returns how many
+// bytes were sent in all, for the host to know when it has them. The
+// pipe ends once every process holding its write end is gone: call
+// Finish once the command has exited, and init has killed what it left
+// behind.
 //
 // The connection stays open: init closes it once the host has
 // acknowledged the status, which tells it the output was written.
 func (o *Output) Finish() (int64, error) {
-	// The deadline stops the pending read, without losing what it read.
-	_ = o.r.SetReadDeadline(time.Now())
 	<-o.done
-	err := o.err
-	if err == nil && !o.hostGone {
-		err = o.drain()
-	}
 	o.r.Close()
-	return o.sent, err
-}
-
-// drain sends what's in the pipe, without waiting for more. It only
-// sends what's there when it starts: a process left in the background
-// may write faster than the host reads, and the pipe would never be
-// empty.
-func (o *Output) drain() error {
-	rc, err := o.r.SyscallConn()
-	if err != nil {
-		return err
-	}
-	buf := make([]byte, 32*1024)
-	var werr error
-	// The pipe is non-blocking: Control reads it without waiting.
-	cerr := rc.Control(func(fd uintptr) {
-		left, err := unix.IoctlGetInt(int(fd), fionread)
-		if err != nil {
-			werr = fmt.Errorf("reading the command's output: %w", err)
-			return
-		}
-		for left > 0 {
-			n, err := unix.Read(int(fd), buf[:min(left, len(buf))])
-			if errors.Is(err, unix.EINTR) {
-				continue
-			}
-			if n <= 0 || err != nil {
-				return
-			}
-			left -= n
-			if werr = o.send(buf[:n]); werr != nil {
-				return
-			}
-		}
-	})
-	if errors.Is(werr, errHostGone) {
-		werr = nil
-	}
-	return errors.Join(werr, cerr)
+	return o.sent, o.err
 }

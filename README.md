@@ -69,7 +69,7 @@ cat run.sh | ./c2vm boot -i fedora -- bash
 ./c2vm boot -v ./src:/src -v ./out:/out fedora -- make -C /src OUT=/out
 ```
 
-`c2vm boot` exits with the command's exit status, which `c2vm-init` sends to the host over vsock before stopping the VM.
+`c2vm boot` exits with the command's exit status, which `c2vm-init` sends to the host over vsock before stopping the VM. Processes the command leaves in the background get SIGKILL as soon as it exits, as in a container whose main process exits, and `c2vm-init` waits for them to die before it stops the VM.
 
 `-scratch SIZE` (`64M` to `64T`, e.g. `20G`) puts the writable layer on a disk of that size instead of in memory, for jobs that write a lot: installing packages, building, pulling data. The disk is a sparse file in `$TMPDIR`, so it only takes the space the VM writes to it. `c2vm-init` formats it as ext4 with the `mkfs.ext4` that ships in the kernel image, so overlayfs, and tools like ostree, rpm and podman, get the extended attributes they need. It's thrown away with the VM, as the in-memory layer is: c2vm removes its file once the VM has started, and the space is freed when the VM stops, even if c2vm is killed. c2vm warns when `$TMPDIR` has less space free than `SIZE`; past that, the command gets I/O errors.
 

@@ -103,35 +103,54 @@ func TestOutputNothing(t *testing.T) {
 	}
 }
 
-// A process the command left in the background keeps the pipe open:
-// Finish sends what was written before it, and doesn't wait for the
-// pipe's end.
-func TestOutputPipeHeldOpen(t *testing.T) {
+// Finish waits for the pipe's end: what the last process holding it
+// writes before it goes away arrives whole, though Finish was called
+// before.
+func TestOutputUntilEnd(t *testing.T) {
 	guestEnd, hostEnd := connected(t)
-	want := []byte("last words\n")
+	first, last := []byte("first words\n"), []byte("last words\n")
+	want := append(append([]byte{}, first...), last...)
 	got := receive(hostEnd, len(want))
 	o, w, err := NewOutput(guestEnd)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer w.Close()
 
-	if _, err := w.Write(want); err != nil {
+	if _, err := w.Write(first); err != nil {
 		t.Fatal(err)
 	}
-	sent, err := finish(t, o)
-	if err != nil {
-		t.Errorf("Finish: %v", err)
+	results := make(chan finished, 1)
+	go func() {
+		sent, err := o.Finish()
+		results <- finished{sent, err}
+	}()
+	// Finish can't return while the write end is open, so this doesn't
+	// depend on timing: the wait only gives a Finish that returns early
+	// the time to.
+	select {
+	case <-results:
+		t.Fatal("Finish returned before the pipe ended")
+	case <-time.After(100 * time.Millisecond):
 	}
-	if sent != int64(len(want)) {
-		t.Errorf("Finish sent %d bytes, want %d", sent, len(want))
+	if _, err := w.Write(last); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+
+	var r finished
+	select {
+	case r = <-results:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Finish didn't return once the pipe ended")
+	}
+	if r.err != nil {
+		t.Errorf("Finish: %v", r.err)
+	}
+	if r.sent != int64(len(want)) {
+		t.Errorf("Finish sent %d bytes, want %d", r.sent, len(want))
 	}
 	if data := <-got; !bytes.Equal(data, want) {
 		t.Errorf("the host got %q, want %q", data, want)
-	}
-
-	if _, err := w.Write([]byte("too late\n")); !errors.Is(err, syscall.EPIPE) {
-		t.Errorf("writing after Finish: %v, want EPIPE", err)
 	}
 }
 
@@ -162,44 +181,5 @@ func TestOutputHostCloses(t *testing.T) {
 
 	if _, err := finish(t, o); err != nil {
 		t.Errorf("Finish: %v, want nil: the host going away isn't an error", err)
-	}
-}
-
-// A process left in the background that writes faster than the host
-// reads keeps the pipe from ever being empty: Finish sends what's there,
-// and stops.
-func TestOutputBackgroundWriter(t *testing.T) {
-	guestEnd, hostEnd := connected(t)
-	// The host reads slower than the process writes.
-	go func() {
-		buf := make([]byte, 4096)
-		for {
-			if _, err := hostEnd.Read(buf); err != nil {
-				return
-			}
-			time.Sleep(time.Millisecond)
-		}
-	}()
-	o, w, err := NewOutput(guestEnd)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer w.Close()
-
-	writing := make(chan struct{})
-	go func() {
-		buf := make([]byte, 4096)
-		for i := 0; ; i++ {
-			if _, err := w.Write(buf); err != nil {
-				return
-			}
-			if i == 0 {
-				close(writing)
-			}
-		}
-	}()
-	<-writing
-	if _, err := finish(t, o); err != nil {
-		t.Errorf("Finish: %v", err)
 	}
 }
