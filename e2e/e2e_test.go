@@ -1,6 +1,7 @@
 // Package e2e boots VMs with c2vm and checks what the commands in them
-// see and do. It only runs with C2VM_E2E=1, on macOS on Apple silicon,
-// as it needs Virtualization.framework and the network:
+// see and do. It only runs with C2VM_E2E=1, and then fails anywhere but
+// macOS on Apple silicon, as it needs Virtualization.framework and the
+// network:
 //
 //	C2VM_E2E=1 go test -count=1 -timeout 30m ./e2e
 //
@@ -67,8 +68,10 @@ func testMain(m *testing.M) int {
 		skip = "set C2VM_E2E=1 to boot VMs"
 		return m.Run()
 	case runtime.GOOS != "darwin" || runtime.GOARCH != "arm64":
-		skip = "booting VMs needs macOS on Apple silicon"
-		return m.Run()
+		// Fail rather than skip: with C2VM_E2E=1 the caller expects VMs
+		// to boot, and a misconfigured runner would otherwise pass.
+		fmt.Fprintf(os.Stderr, "C2VM_E2E=1: booting VMs needs macOS on Apple silicon, not %s/%s\n", runtime.GOOS, runtime.GOARCH)
+		return 1
 	}
 
 	dir, err := os.MkdirTemp("", "c2vm-e2e")
