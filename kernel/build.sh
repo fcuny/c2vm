@@ -30,11 +30,16 @@ if ! check_fragment "$config"; then
 	echo "run kernel/update.sh $version to merge the fragment in" >&2
 	exit 1
 fi
+sum=$(cat "$checksum" 2> /dev/null) || true
+if [[ ${sum##* } != "linux-$version.tar.xz" ]]; then
+	echo "SHA256 isn't for $version: run kernel/update.sh $version" >&2
+	exit 1
+fi
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-fetch "$version" "$work"
+fetch "$version" "$work" "$sum"
 src=$work/linux-$version
 
 cp "$config" "$src/.config"

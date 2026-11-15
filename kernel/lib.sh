@@ -13,42 +13,66 @@ series_of() {
 	"$here/series.sh" "$1"
 }
 
-# fetch <version> <dir>: downloads the release from kernel.org to
-# downloads/ (unless it's already there, e.g. a build and an update in
-# the same CI job), checks its checksum, and extracts it in
-# <dir>/linux-<version>.
-fetch() {
-	local version=$1 dir=$2
-	local tarball=linux-$version.tar.xz
-	local base=https://cdn.kernel.org/pub/linux/kernel/v${version%%.*}.x
-	local downloads=$here/downloads
-	local sum attempt
+downloads=$here/downloads
+# The checksum of VERSION's tarball: update.sh writes it once it has
+# checked the release's signature, and build.sh checks the tarball
+# against it.
+# shellcheck disable=SC2034 # used by build.sh and update.sh
+checksum=$here/SHA256
+
+# kernel_url <version> <file>: where kernel.org has a release's file.
+kernel_url() {
+	echo "https://cdn.kernel.org/pub/linux/kernel/v${1%%.*}.x/$2"
+}
+
+# download <version>: downloads the release's tarball to downloads/,
+# unless it's already there (e.g. a build and an update in the same CI
+# job), and prints its name there.
+download() {
+	local tarball=linux-$1.tar.xz
 	mkdir -p "$downloads"
 	if [[ ! -f $downloads/$tarball ]]; then
-		echo "downloading $tarball"
-		curl -fsSL --retry 3 -o "$downloads/$tarball.part" "$base/$tarball"
+		echo "downloading $tarball" >&2
+		curl -fsSL --retry 3 -o "$downloads/$tarball.part" "$(kernel_url "$1" "$tarball")"
 		mv "$downloads/$tarball.part" "$downloads/$tarball"
 	fi
-	# kernel.org lists a release in sha256sums.asc a few minutes after it
-	# publishes it, and the CDN can serve an older copy for longer: the
-	# query string gets past its cache, and the release gets 10 minutes
-	# to show up.
-	for attempt in 1 2 3 4 5; do
-		curl -fsSL --retry 3 -o "$dir/sha256sums.asc" "$base/sha256sums.asc?$(date +%s)"
-		sum=$(awk -v f="$tarball" '$2 == f' "$dir/sha256sums.asc")
-		if [[ -n $sum ]]; then
-			break
-		fi
-		if [[ $attempt -eq 5 ]]; then
-			echo "sha256sums.asc doesn't list $tarball" >&2
-			return 1
-		fi
-		echo "sha256sums.asc doesn't list $tarball yet, trying again in $attempt minute(s)" >&2
-		sleep $((attempt * 60))
+	echo "$tarball"
+}
+
+# verify <version> <dir>: checks the release's signature, with the keys
+# in keys/, and prints its tarball's checksum, in sha256sum's format.
+# The signature is over the uncompressed tarball: kernel.org compresses
+# it after the upload. It goes in <dir>.
+verify() {
+	local version=$1 dir=$2
+	local tarball keyrings=() key
+	tarball=$(download "$version")
+	curl -fsSL --retry 3 -o "$dir/linux-$version.tar.sign" \
+		"$(kernel_url "$version" "linux-$version.tar.sign")"
+	for key in "$here"/keys/*.asc; do
+		keyrings+=(--keyring "$key")
 	done
-	if ! (cd "$downloads" && echo "$sum" | sha256sum -c -); then
+	# sqv reads stdin from /dev/stdin, not -.
+	if ! xz -dc "$downloads/$tarball" |
+		sqv "${keyrings[@]}" --signature-file "$dir/linux-$version.tar.sign" /dev/stdin > /dev/null; then
 		rm -f "$downloads/$tarball"
-		echo "bad checksum for $tarball: removed it, try again" >&2
+		echo "couldn't verify linux-$version.tar.sign with kernel/keys/: removed $tarball." >&2
+		echo "If it's signed with a key that isn't there, check that key and add it (see kernel/README.md)." >&2
+		return 1
+	fi
+	(cd "$downloads" && sha256sum "$tarball")
+}
+
+# fetch <version> <dir> <checksum>: checks the release's tarball against
+# <checksum>, in sha256sum's format, and extracts it in
+# <dir>/linux-<version>.
+fetch() {
+	local version=$1 dir=$2 want=$3
+	local tarball
+	tarball=$(download "$version")
+	if [[ $(cd "$downloads" && sha256sum "$tarball") != "$want" ]]; then
+		rm -f "$downloads/$tarball"
+		echo "$tarball doesn't match its checksum: removed it" >&2
 		return 1
 	fi
 	tar -xJf "$downloads/$tarball" -C "$dir"

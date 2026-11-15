@@ -4,9 +4,10 @@
 #
 #   kernel/update.sh <version> [<changes file>]
 #
-# Writes <version> to VERSION, and regenerates the config for its series
-# from the current one: c2vm.fragment is merged in, and olddefconfig
-# gives new options their default value. A new series replaces the old
+# Checks <version>'s signature with the keys in keys/, writes its
+# tarball's checksum to SHA256 and <version> to VERSION, and regenerates
+# the config for its series from the current one: c2vm.fragment is
+# merged in, and olddefconfig gives new options their default value. A new series replaces the old
 # one's config. The changes to the config are printed, to review them,
 # and written to <changes file> if given.
 #
@@ -34,7 +35,8 @@ new=$here/configs/$(series_of "$version")/aarch64.config
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-fetch "$version" "$work"
+sum=$(verify "$version" "$work")
+fetch "$version" "$work" "$sum"
 src=$work/linux-$version
 
 cp "$old" "$src/.config"
@@ -55,6 +57,7 @@ cp "$src/.config" "$new"
 if [[ $new != "$old" ]]; then
 	rm -r "$(dirname "$old")"
 fi
+echo "$sum" > "$checksum"
 echo "$version" > "$here/VERSION"
 
 echo "moved from $current to $version; config changes:"
