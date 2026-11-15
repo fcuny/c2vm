@@ -32,19 +32,25 @@ jobs:
       - name: Build
         run: kernel/run.sh kernel/build.sh out
 
-      # Nothing else runs update.sh until there's a new release. On the
-      # current one, with the same toolchain, it regenerates the same
+      # Nothing else runs update.sh and update-e2fsprogs.sh until there's
+      # a new release. On the current ones, with the same toolchain, they
+      # check the signatures again, and regenerate the same checksums and
       # config.
-      - name: Check update.sh
+      - name: Check update.sh and update-e2fsprogs.sh
         run: |
-          kernel/run.sh kernel/update.sh "$(cat kernel/VERSION)"
+          kernel/run.sh kernel/check-updates.sh
           git diff --exit-code
+
+      # A tarball: artifacts don't keep file modes, and mkfs.ext4 has to
+      # stay executable, for the image and for kernel/test/pr.py.
+      - name: Package
+        run: tar -C out -cf kernel.tar .
 
       - name: Upload
         uses: actions/upload-artifact@v7
         with:
           name: kernel
-          path: out/
+          path: kernel.tar
           if-no-files-found: error
 
   publish:
@@ -65,7 +71,12 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: kernel
-          path: kernel/out
+          path: ${{ runner.temp }}/artifact
+
+      - name: Extract the kernel
+        run: |
+          mkdir -p kernel/out
+          tar -xf "$RUNNER_TEMP/artifact/kernel.tar" -C kernel/out
 
       - name: Compute tags
         id: version
@@ -95,8 +106,8 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/c2vm-kernel:${{ steps.version.outputs.version }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.description=Linux ${{ steps.version.outputs.version }} guest kernel for c2vm
-            org.opencontainers.image.licenses=GPL-2.0-only
+            org.opencontainers.image.description=Linux ${{ steps.version.outputs.version }} guest kernel for c2vm, with a static mke2fs
+            org.opencontainers.image.licenses=GPL-2.0-only AND LGPL-2.0-only AND LGPL-2.0-or-later AND LGPL-2.1-or-later AND BSD-3-Clause AND MIT
 
   # After a new series is published from main, opens a draft PR that
   # makes it c2vm's default kernel. It uses KERNEL_BOT_TOKEN, like the

@@ -23,6 +23,7 @@ import secrets
 import signal
 import subprocess
 import sys
+import tarfile
 import tempfile
 from pathlib import Path
 
@@ -92,6 +93,19 @@ def find_run(pr: int) -> tuple[str, str, str]:
     if conclusion != "success":
         raise SetupError(f"the kernel workflow's run for {sha[:7]} didn't succeed ({conclusion}): {url}")
     return sha, version, url
+
+
+def extract_kernel(artifact: Path) -> Path:
+    """Extracts the kernel workflow's artifact, and returns the kernel's
+    path in it. The artifact is a tarball of the image's root, which keeps
+    mkfs.ext4 executable; older runs uploaded the files themselves, with
+    the kernel in arm64/kernel."""
+    tarball = artifact / "kernel.tar"
+    if not tarball.exists():
+        return artifact / "arm64" / "kernel"
+    with tarfile.open(tarball) as tar:
+        tar.extractall(artifact, filter="data")
+    return artifact / "arm64" / "boot" / "kernel"
 
 
 def boot(kernel: Path, release: str, tmp: Path) -> tuple[list[tuple[str, bool]], list[str]]:
@@ -174,7 +188,7 @@ def test(pr: int) -> tuple[bool, str]:
         print(f"downloading the kernel for {sha[:7]} from {url}", file=sys.stderr)
         subprocess.run(["gh", "run", "download", url.rsplit("/", 1)[1], "--name", "kernel",
                         "--dir", str(tmp / "artifact")], cwd=root, check=True)
-        kernel = tmp / "artifact" / "arm64" / "kernel"
+        kernel = extract_kernel(tmp / "artifact")
 
         print("building c2vm", file=sys.stderr)
         subprocess.run(["make", "build"], cwd=root, check=True, stdout=subprocess.DEVNULL)
