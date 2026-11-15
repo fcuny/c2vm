@@ -14,6 +14,9 @@ func TestEmbeddedInit(t *testing.T) {
 	if err := checkInit(embeddedInit); err != nil {
 		t.Errorf("the c2vm-init built into c2vm %v", err)
 	}
+	if err := checkProtocol(embeddedInit); err != nil {
+		t.Errorf("the c2vm-init built into c2vm %v", err)
+	}
 	if got := initVersion(embeddedInit); !strings.HasPrefix(got, "c2vm-init ") || !strings.HasSuffix(got, " (built in, linux/arm64)") {
 		t.Errorf("initVersion = %q, want c2vm-init <version> (built in, linux/arm64)", got)
 	}

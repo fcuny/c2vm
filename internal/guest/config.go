@@ -38,12 +38,22 @@ const (
 	ShutdownPowerOff = "poweroff"
 )
 
+// Protocol names how c2vm and c2vm-init talk: the configuration, the
+// vsock ports, and what goes over them. c2vm writes it into the
+// configuration, and init stops if it's another. c2vm also refuses an
+// init whose binary doesn't have it, which the check in init puts there.
+// Change it whenever a c2vm and a c2vm-init built apart would
+// misunderstand each other.
+const Protocol = "c2vm-init protocol 2"
+
 // DefaultPath is the PATH used when the image doesn't set one, the same
 // as Docker's.
 const DefaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 // Config is what init needs to know to run the image's command.
 type Config struct {
+	// Protocol is the Protocol of the c2vm that wrote the configuration.
+	Protocol string `json:"protocol"`
 	// Args is the command to run: the image's Entrypoint followed by its
 	// Cmd.
 	Args []string `json:"args"`
@@ -81,6 +91,7 @@ func FromImage(config ocispec.ImageConfig) (Config, error) {
 	}
 
 	return Config{
+		Protocol:   Protocol,
 		Args:       args,
 		Env:        config.Env,
 		WorkingDir: config.WorkingDir,

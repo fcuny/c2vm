@@ -43,7 +43,7 @@ make build
 
 The VM gets an address from Virtualization.framework's NAT, which `c2vm-init` prints on stderr when it starts (`c2vm-init: eth0: 192.168.64.30/24`); it's reachable from the Mac at that address. Ctrl-C stops it.
 
-The command's output goes to stdout. The kernel's messages and `c2vm-init`'s go to stderr, on a console of their own. If the guest kernel panics, c2vm stops the VM and fails with `the guest kernel panicked`.
+The command's stdout and stderr go to c2vm's, separately and byte for byte, as with `docker run`: `> out`, `2>` and binary output work, and the command doesn't see a terminal. If c2vm's stdout closes (`c2vm boot ... | head -1`), the command gets SIGPIPE. If the command's output arrives cut short, or c2vm can't write it (a full disk), c2vm fails with exit status 1. That's stricter than `docker run`, which only fails when its stream of output breaks before the container exits. The kernel's messages and `c2vm-init`'s go to stderr too, on a console of their own. If the guest kernel panics, c2vm stops the VM and fails with `the guest kernel panicked`.
 
 A command after `--` replaces the image's command, as with `docker run`; it's passed to the image's entrypoint, if it has one:
 

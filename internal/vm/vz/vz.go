@@ -151,10 +151,15 @@ func configuration(spec vm.Spec, command, kernel serialPort) (*vz.VirtualMachine
 // only live in memory. The status is then 128 plus the signal's number,
 // as with a shell. With spec.TTY, the terminal is in raw mode, so Ctrl-C
 // goes to the guest; escapeKey stops the VM instead, as SIGINT would.
-// Otherwise, the console only shows the command's output, and with
-// spec.Stdin, stdin goes to the command over vsock.
+// Otherwise, the command's stdout and stderr come over vsock, each to
+// its own, and with spec.Stdin, stdin goes to the command over vsock.
+// Run fails if either arrives cut short.
 func (b *Backend) Run(ctx context.Context, spec vm.Spec) (int, error) {
-	var input *os.File
+	// The kernel's console and the command's stderr both write to
+	// stderr.
+	stderr := &lockedWriter{w: waitWriter{int(os.Stderr.Fd())}}
+
+	var input, consoleOutput *os.File
 	var escaped <-chan struct{}
 	if spec.TTY {
 		stdin, err := nonblockingInput(os.Stdin)
@@ -169,27 +174,34 @@ func (b *Backend) Run(ctx context.Context, spec vm.Spec) (int, error) {
 		// The console reads from r for as long as the VM runs.
 		defer r.Close()
 		input, escaped = r, esc
+		consoleOutput = os.Stdout
 	} else {
-		// Nothing reads the console's input: give it a pipe that's
-		// never written to, so it doesn't take any of stdin.
+		// The command doesn't use its console: give it a pipe that's
+		// never written to, so it doesn't take any of stdin, and
+		// discard what's written to it, so it stays out of stdout.
 		r, w, err := os.Pipe()
 		if err != nil {
 			return 0, err
 		}
 		defer r.Close()
 		defer w.Close()
-		input = r
+		devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+		if err != nil {
+			return 0, err
+		}
+		defer devNull.Close()
+		input, consoleOutput = r, devNull
 	}
 
 	// The kernel's console goes to stderr, with c2vm's messages.
-	console, err := watchConsole(waitWriter{int(os.Stderr.Fd())})
+	console, err := watchConsole(stderr)
 	if err != nil {
 		return 0, err
 	}
 	// Once the VM has stopped, or failed to start.
 	defer console.drain()
 
-	config, err := configuration(spec, serialPort{input, os.Stdout}, console.port)
+	config, err := configuration(spec, serialPort{input, consoleOutput}, console.port)
 	if err != nil {
 		return 0, err
 	}
@@ -199,7 +211,22 @@ func (b *Backend) Run(ctx context.Context, spec vm.Spec) (int, error) {
 		return 0, err
 	}
 
-	statuses, err := listenStatus(machine)
+	// Without -t, the command's outputs come over vsock. On a terminal,
+	// stdout and stderr may share a file description with stdin, which
+	// nonblockingInput makes non-blocking.
+	var stdoutCopy, stderrCopy *output
+	if !spec.TTY {
+		stdoutCopy, err = receiveOutput(machine, guest.StdoutPort, "stdout", waitWriter{int(os.Stdout.Fd())})
+		if err != nil {
+			return 0, err
+		}
+		stderrCopy, err = receiveOutput(machine, guest.StderrPort, "stderr", stderr)
+		if err != nil {
+			return 0, err
+		}
+	}
+
+	statuses, err := listenStatus(machine, stdoutCopy, stderrCopy)
 	if err != nil {
 		return 0, err
 	}
@@ -252,10 +279,14 @@ func (b *Backend) Run(ctx context.Context, spec vm.Spec) (int, error) {
 			case vz.VirtualMachineStateStopped:
 				log.Print("vm stopped")
 				// init waits for the status to be read before it stops
-				// the VM, so it's there if it was sent.
+				// the VM, so it's there if it was sent. When c2vm stopped
+				// the VM itself, while the output was still being written,
+				// the output is cut short because of that.
 				select {
-				case code := <-statuses:
-					return code, nil
+				case s := <-statuses:
+					if s.err == nil || (!panicked && interrupted == 0) {
+						return s.code, s.err
+					}
 				default:
 				}
 				if panicked {
@@ -317,15 +348,25 @@ func listen(machine *vz.VirtualMachine, port uint32) (*vz.VirtioSocketListener, 
 	return listener, nil
 }
 
+// status is the command's exit status, or why c2vm fails though the
+// command exited: its output was cut short, as docker run fails when
+// the stream of the container's output does.
+type status struct {
+	code int
+	err  error
+}
+
 // listenStatus listens for init to report the command's exit status,
-// and sends it on the returned channel.
-func listenStatus(machine *vz.VirtualMachine) (<-chan int, error) {
+// and sends it on the returned channel once the command's outputs have
+// been written, if they come over vsock: stdout and stderr are nil with
+// -t.
+func listenStatus(machine *vz.VirtualMachine, stdout, stderr *output) (<-chan status, error) {
 	listener, err := listen(machine, guest.StatusPort)
 	if err != nil {
 		return nil, err
 	}
 
-	statuses := make(chan int, 1)
+	statuses := make(chan status, 1)
 	go func() {
 		defer listener.Close()
 		conn, err := listener.Accept()
@@ -333,14 +374,25 @@ func listenStatus(machine *vz.VirtualMachine) (<-chan int, error) {
 			log.Printf("waiting for the exit status: %v", err)
 			return
 		}
-		// Closing the connection tells init the status was read.
+		// Closing the connection tells init the status was read, and the
+		// output written: it then stops the VM.
 		defer conn.Close()
-		code, err := guest.ReadStatus(conn)
+		reported, err := guest.ReadStatus(conn)
 		if err != nil {
 			log.Print(err)
 			return
 		}
-		statuses <- code
+		var errs []error
+		for _, o := range []struct {
+			output *output
+			sent   int64
+		}{{stdout, reported.Stdout}, {stderr, reported.Stderr}} {
+			if o.output == nil {
+				continue
+			}
+			errs = append(errs, o.output.wait(o.sent))
+		}
+		statuses <- status{code: reported.Code, err: errors.Join(errs...)}
 	}()
 	return statuses, nil
 }

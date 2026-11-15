@@ -244,8 +244,8 @@ func bootCmd(t *testing.T, args ...string) *exec.Cmd {
 	return cmd
 }
 
-// boot runs cmd, from bootCmd, and returns what the command printed on
-// its console, and c2vm's exit status.
+// boot runs cmd, from bootCmd, and returns c2vm's stdout, which is the
+// command's, byte for byte, without -t, and c2vm's exit status.
 func boot(t *testing.T, cmd *exec.Cmd) (string, int) {
 	t.Helper()
 	stdout, stderr, code := bootOutputs(t, cmd)
@@ -254,7 +254,7 @@ func boot(t *testing.T, cmd *exec.Cmd) (string, int) {
 			t.Logf("c2vm's stdout:\n%s\nc2vm's stderr:\n%s", stdout, stderr)
 		}
 	})
-	return commandOutput(stdout), code
+	return stdout, code
 }
 
 // bootOutputs runs cmd, from bootCmd, and returns c2vm's stdout and
@@ -270,14 +270,6 @@ func bootOutputs(t *testing.T, cmd *exec.Cmd) (string, string, int) {
 		t.Fatalf("running c2vm: %v", err)
 	}
 	return stdout.String(), stderr.String(), cmd.ProcessState.ExitCode()
-}
-
-// commandOutput returns what the command printed on its console, with
-// \n line endings, which the console's terminal turns into \r\n. Init's
-// and the kernel's messages go to the kernel's console, and so to
-// c2vm's stderr: they aren't in out.
-func commandOutput(out string) string {
-	return strings.ReplaceAll(out, "\r\n", "\n")
 }
 
 // hasLine reports whether line is one of out's lines.
@@ -518,6 +510,147 @@ func TestNoStdin(t *testing.T) {
 	}
 	if out != "" {
 		t.Errorf("output %q, want nothing", out)
+	}
+}
+
+// TestStdout checks the command's stdout reaches c2vm's as it is: no
+// terminal turns \n into \r\n, and nothing else is in it.
+func TestStdout(t *testing.T) {
+	t.Parallel()
+	out, code := boot(t, bootCmd(t, image, "--", "printf", `a\nb`))
+	if code != 0 {
+		t.Errorf("exit status %d, want 0", code)
+	}
+	if want := "a\nb"; out != want {
+		t.Errorf("output %q, want %q", out, want)
+	}
+}
+
+func TestStderr(t *testing.T) {
+	t.Parallel()
+	stdout, stderr, code := bootOutputs(t, bootCmd(t, image, "--", "sh", "-c", "echo err >&2"))
+	if code != 0 {
+		t.Errorf("exit status %d, want 0", code)
+	}
+	if stdout != "" {
+		t.Errorf("stdout %q, want nothing", stdout)
+	}
+	if !hasLine(stderr, "err") {
+		t.Errorf("stderr %q, want the command's line", stderr)
+	}
+}
+
+// TestNotATerminal checks the command's outputs aren't terminals
+// without -t, so programs don't turn on colors or progress bars.
+func TestNotATerminal(t *testing.T) {
+	t.Parallel()
+	_, code := boot(t, bootCmd(t, image, "--", "sh", "-c", "[ -t 1 ] || [ -t 2 ]"))
+	if code != 1 {
+		t.Errorf("exit status %d, want 1", code)
+	}
+}
+
+// TestDevStdout checks /dev/stdout and /dev/stderr can be opened, as
+// images that log to them, like nginx's, expect.
+func TestDevStdout(t *testing.T) {
+	t.Parallel()
+	stdout, stderr, code := bootOutputs(t, bootCmd(t, image, "--", "sh", "-c", "echo out > /dev/stdout && echo err > /dev/stderr"))
+	if code != 0 {
+		t.Errorf("exit status %d, want 0\nstderr:\n%s", code, stderr)
+	}
+	if stdout != "out\n" {
+		t.Errorf("stdout %q, want %q", stdout, "out\n")
+	}
+	if !hasLine(stderr, "err") {
+		t.Errorf("stderr %q, want the command's line", stderr)
+	}
+}
+
+// TestLargeOutput checks a large output arrives whole, though the
+// command exits right after writing it.
+func TestLargeOutput(t *testing.T) {
+	t.Parallel()
+	const size = 100 << 20
+	script := fmt.Sprintf("head -c %d /dev/urandom > /tmp/data && sha256sum < /tmp/data >&2 && cat /tmp/data", size)
+	cmd := bootCmd(t, image, "--", "sh", "-c", script)
+	var stdout bytes.Buffer
+	var stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("c2vm boot: %v\nstderr:\n%s", err, stderr.String())
+	}
+	if stdout.Len() != size {
+		t.Errorf("got %d bytes, want %d", stdout.Len(), size)
+	}
+	sum := sha256.Sum256(stdout.Bytes())
+	if want := hex.EncodeToString(sum[:]) + "  -"; !hasLine(stderr.String(), want) {
+		t.Errorf("the checksum of the output, %s, isn't the one computed in the guest:\n%s", want, stderr.String())
+	}
+}
+
+// TestOutputBeforeExit checks what the command writes right before it
+// exits isn't lost, though a process it left in the background still
+// holds its outputs.
+func TestOutputBeforeExit(t *testing.T) {
+	t.Parallel()
+	stdout, stderr, code := bootOutputs(t, bootCmd(t, image, "--", "sh", "-c", "sleep 600 & echo out; echo err >&2; exit 5"))
+	if code != 5 {
+		t.Errorf("exit status %d, want 5\nstderr:\n%s", code, stderr)
+	}
+	if stdout != "out\n" {
+		t.Errorf("stdout %q, want %q", stdout, "out\n")
+	}
+	if !hasLine(stderr, "err") {
+		t.Errorf("stderr %q, want the command's line", stderr)
+	}
+}
+
+// TestStdoutClosed checks the command stops once c2vm's stdout goes
+// away, as in c2vm boot ... | head -1: it gets SIGPIPE, as it would in
+// a local pipeline.
+func TestStdoutClosed(t *testing.T) {
+	t.Parallel()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := bootCmd(t, image, "--", "yes")
+	var stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = w, &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+
+	line := make([]byte, 2)
+	if _, err := io.ReadFull(r, line); err != nil {
+		t.Errorf("reading the first line: %v", err)
+	}
+	r.Close()
+	_ = cmd.Wait()
+	if code := cmd.ProcessState.ExitCode(); code != 128+int(syscall.SIGPIPE) {
+		t.Errorf("exit status %d, want %d, from SIGPIPE\nstderr:\n%s", code, 128+int(syscall.SIGPIPE), stderr.String())
+	}
+	if string(line) != "y\n" {
+		t.Errorf("first line %q, want %q", line, "y\n")
+	}
+	// The reader going away isn't an error.
+	if strings.Contains(stderr.String(), "passing the command's output") {
+		t.Errorf("init reported an error passing the output:\n%s", stderr.String())
+	}
+}
+
+// TestBackgroundWriter checks the VM stops once the command exits,
+// though a process it left in the background writes to its stdout
+// faster than c2vm can pass it on.
+func TestBackgroundWriter(t *testing.T) {
+	t.Parallel()
+	cmd := bootCmd(t, image, "--", "sh", "-c", "yes & sleep 1; exit 6")
+	var stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = io.Discard, &stderr
+	_ = cmd.Run()
+	if code := cmd.ProcessState.ExitCode(); code != 6 {
+		t.Errorf("exit status %d, want 6\nstderr:\n%s", code, stderr.String())
 	}
 }
 
