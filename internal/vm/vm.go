@@ -1,7 +1,10 @@
 // Package vm defines what c2vm needs from a hypervisor to run a VM.
 package vm
 
-import "context"
+import (
+	"context"
+	"net"
+)
 
 // Spec is the VM to run.
 type Spec struct {
@@ -24,6 +27,9 @@ type Spec struct {
 	Stdin bool
 	// Shares are the host's directories to share with the VM.
 	Shares []Share
+	// MAC is the MAC address of the VM's network interface. The
+	// backend picks a random one when it's nil.
+	MAC net.HardwareAddr
 }
 
 // Share is a directory of the host the VM can mount.

@@ -95,6 +95,25 @@ At boot, `c2vm-init` runs from an initramfs: it mounts the image with a writable
 
 `c2vm-init` is a static Linux binary for arm64, the only architecture the VMs run, which `make build` builds and embeds in `c2vm`, so `c2vm` is the only file to copy around. `c2vm version` prints the version of the one built in, or says there's none. `-init` boots another one, to try changes to it without rebuilding `c2vm`.
 
+### Network
+
+Each VM gets its address from the DHCP server of Virtualization.framework's NAT, which leases addresses from a pool of 253 (192.168.64.2 to .254) shared with every other VM on the Mac, from Tart or UTM too. A lease outlives its VM, by an hour or more. The server gives a MAC address its lease back, so c2vm reuses MACs: a VM takes the first of 64 slots no other running VM holds, and its MAC comes from that slot. The slots, and the random prefix of their MACs, live in `~/Library/Caches/c2vm/mac`, whatever `-cache-dir` says. c2vm only takes as many leases as the most VMs it has run at the same time. Past 64 VMs at once, the others get random MACs, and new leases. macOS may purge `~/Library/Caches`: the next VMs then get a new prefix, and new leases, while the old ones linger until they expire.
+
+A VM also gets the same address as the VM that last held its slot, whatever image either booted. If you SSH into VMs, each image has its own host keys, so ssh refuses to connect with `REMOTE HOST IDENTIFICATION HAS CHANGED`. Skip the host key check on the command line, so it only applies to that connection, and not to a real network on the same addresses:
+
+```sh
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@192.168.64.36
+```
+
+If the pool fills up anyway, a VM never gets an address: its kernel retries DHCP (`IP-Config: Reopening network devices...` on stderr) and c2vm hangs until a lease expires. `/var/db/dhcpd_leases` lists the leases. Both of these fix it, and need root:
+
+```sh
+# Shorten leases to 10 minutes.
+sudo defaults write /Library/Preferences/SystemConfiguration/com.apple.InternetSharing.default.plist bootpd -dict DHCPLeaseTimeSecs -int 600
+# Forget every lease, for every VM on the Mac.
+sudo rm /var/db/dhcpd_leases
+```
+
 ### Kernel
 
 `c2vm boot` pulls a kernel of a recent stable series, the one `cmd/c2vm/kernel.go` names, built with [a minimal config for microVMs](kernel/), from `ghcr.io/fcuny/c2vm-kernel:7.3` (for arm64, with the kernel in `/boot/kernel`), and caches it. `-kernel` takes another image, or a kernel file. To extract the kernel yourself:
@@ -119,4 +138,4 @@ Virtualization.framework only lets binaries signed with the `com.apple.security.
 
 ### Testing
 
-`go test ./...` runs the unit tests, which don't boot anything. `make e2e` builds c2vm, with c2vm-init embedded, and boots VMs with them, from `alpine`, to check what commands see and do in the VM: their output and exit status, `-e`, `-i`, `-t`, `-v` and `-init`. It boots the default kernel, or `C2VM_E2E_KERNEL`: an image, like `ghcr.io/fcuny/c2vm-kernel:7.3`, or a kernel file by its absolute path. It needs macOS on Apple silicon and the network, and CI can't run it ([#53](https://github.com/fcuny/c2vm/issues/53)): run it before opening a PR.
+`go test ./...` runs the unit tests, which don't boot anything. `make e2e` builds c2vm, with c2vm-init embedded, and boots VMs with them, from `alpine`, to check what commands see and do in the VM: their output and exit status, `-e`, `-i`, `-t`, `-v`, `-init`, and that VMs reuse MAC addresses. It boots the default kernel, or `C2VM_E2E_KERNEL`: an image, like `ghcr.io/fcuny/c2vm-kernel:7.3`, or a kernel file by its absolute path. It needs macOS on Apple silicon and the network, and CI can't run it ([#53](https://github.com/fcuny/c2vm/issues/53)): run it before opening a PR.

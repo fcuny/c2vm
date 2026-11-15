@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -26,6 +27,7 @@ import (
 	"fcuny.net/c2vm/internal/guest"
 	"fcuny.net/c2vm/internal/image"
 	"fcuny.net/c2vm/internal/initramfs"
+	"fcuny.net/c2vm/internal/macslot"
 	"fcuny.net/c2vm/internal/vm"
 )
 
@@ -416,6 +418,13 @@ func runBoot(args []string) error {
 		return fmt.Errorf("failed to build the initramfs: %w", err)
 	}
 
+	// The slot is held until the VM has stopped.
+	var mac net.HardwareAddr
+	if slot := acquireSlot(); slot != nil {
+		defer slot.Release()
+		mac = slot.MAC
+	}
+
 	code, err := backend.Run(ctx, vm.Spec{
 		Kernel:    kernel,
 		Initrd:    initrd,
@@ -425,6 +434,7 @@ func runBoot(args []string) error {
 		TTY:       config.TTY,
 		Stdin:     config.Stdin,
 		Shares:    shares,
+		MAC:       mac,
 	})
 	if err != nil {
 		return err
@@ -433,6 +443,40 @@ func runBoot(args []string) error {
 		return exitError(code)
 	}
 	return nil
+}
+
+// macDirEnv names a directory for the MAC slots, instead of the user's
+// cache directory. It's for the e2e tests: a test that checks a VM
+// reuses the MAC of the VM before it needs slots no other c2vm takes in
+// between.
+const macDirEnv = "C2VM_MAC_DIR"
+
+// acquireSlot takes a MAC slot for the VM, so that it reuses the MAC,
+// and the DHCP lease, of an earlier VM (see macslot). The slots are in
+// the user's cache directory, whatever -cache-dir says: a new cache
+// directory per boot would otherwise mean a new MAC per boot. It
+// returns nil when the VM has to make do with a random MAC: every slot
+// is taken, or the slots can't be used, which isn't worth failing the
+// boot for.
+func acquireSlot() *macslot.Slot {
+	dir := os.Getenv(macDirEnv)
+	if dir == "" {
+		cacheDir, err := cache.DefaultDir()
+		if err != nil {
+			log.Printf("warning: can't reuse a MAC address, using a random one: %v\n", err)
+			return nil
+		}
+		dir = filepath.Join(cacheDir, "mac")
+	}
+	slot, err := macslot.Acquire(dir, macslot.Slots)
+	if err != nil {
+		log.Printf("warning: can't reuse a MAC address, using a random one: %v\n", err)
+		return nil
+	}
+	if slot == nil {
+		log.Printf("all %d MAC addresses are in use, using a random one\n", macslot.Slots)
+	}
+	return slot
 }
 
 // configure sets how init runs the command from the options: with a

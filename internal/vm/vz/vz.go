@@ -98,7 +98,17 @@ func configuration(spec vm.Spec, command, kernel serialPort) (*vz.VirtualMachine
 	if err != nil {
 		return nil, fmt.Errorf("network: %w", err)
 	}
-	mac, err := vz.NewRandomLocallyAdministeredMACAddress()
+	var mac *vz.MACAddress
+	if spec.MAC != nil {
+		// vz turns a MAC Virtualization.framework rejects into a nil
+		// address, without an error.
+		if len(spec.MAC) != 6 {
+			return nil, fmt.Errorf("network: invalid MAC address %s: expected 6 bytes", spec.MAC)
+		}
+		mac, err = vz.NewMACAddress(spec.MAC)
+	} else {
+		mac, err = vz.NewRandomLocallyAdministeredMACAddress()
+	}
 	if err != nil {
 		return nil, fmt.Errorf("network: %w", err)
 	}
