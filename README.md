@@ -34,7 +34,22 @@ Some limits to keep in mind:
 
 ## How
 
-c2vm runs on macOS, on Apple silicon. There's nothing to set up: `make build` builds `c2vm`, with `c2vm-init` in it, and signs it.
+c2vm runs on macOS 26 or later, on Apple silicon. There's nothing to set up besides getting `c2vm`, with `c2vm-init` in it. Each [release](https://github.com/fcuny/c2vm/releases) has one:
+
+```sh
+gh release download --repo fcuny/c2vm --pattern '*-darwin-arm64.tar.gz'
+tar -xzf c2vm-*-darwin-arm64.tar.gz c2vm
+```
+
+This checks that the repository's release workflow built it:
+
+```sh
+gh attestation verify c2vm --repo fcuny/c2vm --signer-workflow fcuny/c2vm/.github/workflows/release.yml
+```
+
+Its signature is ad hoc, not from an Apple developer ID, so macOS refuses to run it once a browser has downloaded it. `xattr -d com.apple.quarantine c2vm` lifts that. `gh` and `curl` don't mark what they download.
+
+To build it instead, `make build` builds `c2vm`, with `c2vm-init` in it, and signs it.
 
 ```sh
 make build
@@ -146,4 +161,4 @@ Virtualization.framework only lets binaries signed with the `com.apple.security.
 
 ### Testing
 
-`go test ./...` runs the unit tests, which don't boot anything. `make e2e` builds c2vm, with c2vm-init embedded, and boots VMs with them, from `alpine`, to check what commands see and do in the VM: their output and exit status, `-e`, `-i`, `-t`, `-v`, `-init`, `-scratch`, that VMs reuse MAC addresses, and that a VM whose init doesn't start is restarted (`C2VM_STUCK_BOOTS` makes c2vm treat its first boots as stuck). It boots the default kernel, or `C2VM_E2E_KERNEL`: an image, like `ghcr.io/fcuny/c2vm-kernel:7.3`, or by its absolute path a directory laid out like one, or a kernel file, with which the `-scratch` tests are skipped. It needs macOS on Apple silicon and the network. CI can't run it, as GitHub's macOS runners can't boot VMs: run it before opening a PR.
+`go test ./...` runs the unit tests, which don't boot anything. `make e2e` builds c2vm, with c2vm-init embedded, and boots VMs with them, from `alpine`, to check what commands see and do in the VM: their output and exit status, `-e`, `-i`, `-t`, `-v`, `-init`, `-scratch`, that VMs reuse MAC addresses, and that a VM whose init doesn't start is restarted (`C2VM_STUCK_BOOTS` makes c2vm treat its first boots as stuck). It boots the default kernel, or `C2VM_E2E_KERNEL`: an image, like `ghcr.io/fcuny/c2vm-kernel:7.3`, or by its absolute path a directory laid out like one, or a kernel file, with which the `-scratch` tests are skipped. It needs macOS on Apple silicon and the network. CI can't run it, as GitHub's macOS runners can't boot VMs: run it before opening a PR, and before [tagging a release](docs/releasing.md).

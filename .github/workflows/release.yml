@@ -1,0 +1,114 @@
+name: release
+
+# Pushing a version tag builds c2vm on Apple silicon and creates a draft
+# release with it, to edit and publish by hand. See docs/releasing.md.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions: {}
+
+jobs:
+  release:
+    name: Release
+    # A fixed image, not macos-latest: the SDK changes with it, and so
+    # could the binary.
+    runs-on: macos-26
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      # To create the release.
+      contents: write
+      # To sign and store the build provenance attestation.
+      id-token: write
+      attestations: write
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The history and tags, to find the previous release's tag.
+          fetch-depth: 0
+
+      # No cache: what ships is built from the tag and the module proxy
+      # only, not from what another run left behind.
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build and sign
+        run: make build
+
+      # The go command stamps the version from git: a checkout without
+      # the tag, or a dirty tree, would ship as something else. The
+      # binary must run on the oldest macOS the Makefile names, not only
+      # on the runner's.
+      - name: Check the binary
+        run: |
+          codesign -d --entitlements - c2vm | grep -q com.apple.security.virtualization
+          vtool -show-build c2vm
+          test "$(vtool -show-build c2vm | awk '$1 == "minos" { print $2 }')" = "$(make -s macos-min)"
+          ./c2vm version | tee version.txt
+          printf 'c2vm %s\nc2vm-init %s (built in, linux/arm64)\n' "$TAG" "$TAG" | diff - version.txt
+
+      - name: Package
+        run: |
+          tar -czf "c2vm-$TAG-darwin-arm64.tar.gz" c2vm LICENSE.txt README.md
+          shasum -a 256 "c2vm-$TAG-darwin-arm64.tar.gz" > SHA256SUMS
+          cat SHA256SUMS
+
+      # The binary too, so that gh attestation verify works on it once
+      # extracted, not only on the tarball.
+      - name: Attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            c2vm
+            c2vm-${{ github.ref_name }}-darwin-arm64.tar.gz
+
+      # The default kernel is a series tag, which moves with each patch
+      # release. The notes record what it was at release time, by the
+      # linux/arm64 manifest's digest, the one c2vm resolves and caches.
+      - name: Write the notes
+        run: |
+          kernel=$(sed -n 's/^const defaultKernel = "\(.*\)"$/\1/p' cmd/c2vm/kernel.go)
+          test -n "$kernel"
+          repo=${kernel#ghcr.io/}
+          repo=${repo%:*}
+          token=$(curl -fsS "https://ghcr.io/token?scope=repository:$repo:pull" | jq -r .token)
+          digest=$(curl -fsS \
+            -H "Authorization: Bearer $token" \
+            -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json" \
+            "https://ghcr.io/v2/$repo/manifests/${kernel##*:}" |
+            jq -r '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64") | .digest')
+          test -n "$digest"
+          cat > notes.md <<EOF
+          c2vm boots \`$kernel\` by default. At release time, that was \`ghcr.io/$repo@$digest\`.
+          EOF
+          cat notes.md
+
+      # The notes list the pull requests since the previous tag, not
+      # since the previous release: v0.1.0 has no release.
+      - name: Create a draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          previous=$(git describe --tags --abbrev=0 --match 'v*' "$TAG^")
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --verify-tag \
+            --title "$TAG" \
+            --notes-file notes.md \
+            --generate-notes \
+            --notes-start-tag "$previous" \
+            "c2vm-$TAG-darwin-arm64.tar.gz" SHA256SUMS
