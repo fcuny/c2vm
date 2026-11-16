@@ -5,7 +5,9 @@
 //	C2VM_E2E=1 go test -count=1 -timeout 30m ./e2e
 //
 // or make e2e. The VMs boot c2vm's default kernel, or C2VM_E2E_KERNEL:
-// an image, or a kernel file by its absolute path.
+// an image, or by its absolute path a directory laid out like one, or a
+// kernel file. A kernel file has no mkfs.ext4, so the -scratch tests are
+// skipped with one.
 package e2e
 
 import (
@@ -26,6 +28,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -55,6 +58,11 @@ var (
 	bootArgs []string
 	// image is imageTag by the digest it resolved to.
 	image string
+	// guestTools is a directory of helpers built for the guest, which
+	// the tests mount when the image doesn't have what they need.
+	guestTools string
+	// scratchSkip is why the -scratch tests don't run, if they don't.
+	scratchSkip string
 )
 
 func TestMain(m *testing.M) {
@@ -79,7 +87,8 @@ func testMain(m *testing.M) int {
 	defer os.RemoveAll(dir)
 
 	c2vm, c2vmInit = filepath.Join(dir, "c2vm"), filepath.Join(dir, "c2vm-init")
-	if err := build(c2vm, c2vmInit); err != nil {
+	guestTools = filepath.Join(dir, "guest")
+	if err := build(c2vm, c2vmInit, guestTools); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
@@ -130,6 +139,7 @@ func testMain(m *testing.M) int {
 		return 1
 	}
 
+	scratchSkip = noScratch(kernel)
 	return m.Run()
 }
 
@@ -187,11 +197,34 @@ func checkKernel(kernel string) error {
 	return nil
 }
 
+// noScratch returns why the -scratch tests can't run with kernel,
+// C2VM_E2E_KERNEL, if they can't: a kernel file has no mkfs.ext4. There's
+// no warm-up for them: the boot that pulls the kernel image caches its
+// mkfs.ext4 too. Only a kernel cached before that, without it, makes
+// them each pull the image again.
+func noScratch(kernel string) string {
+	if fi, err := os.Stat(kernel); kernel != "" && err == nil && fi.Mode().IsRegular() {
+		return "C2VM_E2E_KERNEL is a kernel file, without mkfs.ext4: pass a directory laid out like the kernel image to test -scratch"
+	}
+	return ""
+}
+
+// scratchCmd is bootCmd for the -scratch tests, which it skips when
+// noScratch says so.
+func scratchCmd(t *testing.T, args ...string) *exec.Cmd {
+	t.Helper()
+	if scratchSkip != "" {
+		t.Skip(scratchSkip)
+	}
+	return bootCmd(t, args...)
+}
+
 // build builds c2vm as make build does, so the tests boot what ships:
 // c2vm-init for Linux on arm64, then c2vm with it embedded, signed with
 // the entitlement to create VMs. An overlay embeds c2vmInit from where
-// it's built, so the tests leave the checkout alone.
-func build(c2vm, c2vmInit string) error {
+// it's built, so the tests leave the checkout alone. It also builds the
+// helpers in testdata into guestTools, for the guest.
+func build(c2vm, c2vmInit, guestTools string) error {
 	dir := filepath.Dir(c2vm)
 	embedPath, err := filepath.Abs("../cmd/c2vm/c2vm-init")
 	if err != nil {
@@ -210,8 +243,10 @@ func build(c2vm, c2vmInit string) error {
 		exec.Command("go", "build", "-o", c2vmInit, "../cmd/c2vm-init"),
 		exec.Command("go", "build", "-tags", "embedinit", "-overlay", overlayPath, "-o", c2vm, "../cmd/c2vm"),
 		exec.Command("codesign", "--force", "--sign", "-", "--entitlements", "../hack/vz.entitlements", c2vm),
+		exec.Command("go", "build", "-o", filepath.Join(guestTools, "xattr"), "./testdata/xattr"),
 	}
 	cmds[0].Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS=linux", "GOARCH=arm64")
+	cmds[3].Env = cmds[0].Env
 	for _, cmd := range cmds {
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("%s: %v\n%s", strings.Join(cmd.Args, " "), err, out)
@@ -772,6 +807,125 @@ func TestVolume(t *testing.T) {
 	}
 	if got, err := os.ReadFile(filepath.Join(dir, "out")); err != nil || string(got) != "from the guest\n" {
 		t.Errorf("the guest wrote %q (%v), want %q", got, err, "from the guest\n")
+	}
+}
+
+// writeRoot writes count MiB to /, the overlay, whose writable layer
+// holds it, then prints the size of / in KiB.
+const writeRoot = `dd if=/dev/zero of=/big bs=1M count=%d 2>&1 && df -k / | awk 'NR == 2 { print $2 }'`
+
+// TestNoScratch checks what -scratch is for: without it, the writable
+// layer is a tmpfs, which can't take more than half of the VM's memory.
+func TestNoScratch(t *testing.T) {
+	t.Parallel()
+	out, code := boot(t, bootCmd(t, "-memory", "512", image, "--", "sh", "-c", fmt.Sprintf(writeRoot, 600)))
+	if code == 0 {
+		t.Error("exit status 0, want writing 600 MiB in a 512 MiB VM to fail")
+	}
+	if !strings.Contains(out, "No space left on device") {
+		t.Errorf("output %q, want ENOSPC", out)
+	}
+}
+
+func TestScratch(t *testing.T) {
+	t.Parallel()
+	out, code := boot(t, scratchCmd(t, "-memory", "512", "-scratch", "1G", image, "--", "sh", "-c", fmt.Sprintf(writeRoot, 600)))
+	if code != 0 {
+		t.Fatalf("exit status %d, want 0: %s", code, out)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	size, err := strconv.Atoi(lines[len(lines)-1])
+	if err != nil {
+		t.Fatalf("no size for / in %q", out)
+	}
+	// The disk, less what ext4 keeps for itself.
+	if size < 900<<10 || size > 1<<20 {
+		t.Errorf("/ is %d KiB, want about 1 GiB", size)
+	}
+}
+
+// TestScratchXattr checks that the overlay keeps user extended
+// attributes on the scratch disk, as ostree needs in bare-user mode. A
+// tmpfs has them too on 6.6 and later kernels, so this checks the ext4
+// layer, not what sets it apart.
+func TestScratchXattr(t *testing.T) {
+	t.Parallel()
+	out, code := boot(t, scratchCmd(t, "-scratch", "64M", "-v", guestTools+":/tools:ro", image, "--",
+		"sh", "-c", "touch /file && /tools/xattr /file user.c2vm 'from the guest'"))
+	if code != 0 {
+		t.Errorf("exit status %d, want 0", code)
+	}
+	if want := "from the guest\n"; out != want {
+		t.Errorf("output %q, want %q", out, want)
+	}
+}
+
+// TestScratchRemoved checks that the scratch disk's file is gone once the
+// VM runs, so that it can't outlive c2vm, and that nothing is left once
+// it stops.
+func TestScratchRemoved(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	cmd := scratchCmd(t, "-scratch", "64M", image, "--", "sh", "-c", "echo started && sleep 5")
+	cmd.Env = append(os.Environ(), "TMPDIR="+tmp)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("c2vm's stderr:\n%s", &stderr)
+		}
+	})
+	// Cleanups run last first: when the test stops early, c2vm is
+	// stopped, and done writing to stderr, before the one above reads it.
+	waited := false
+	t.Cleanup(func() {
+		if !waited {
+			cmd.Process.Signal(syscall.SIGTERM)
+			cmd.Wait()
+		}
+	})
+
+	if line, err := bufio.NewReader(stdout).ReadString('\n'); line != "started\n" {
+		t.Fatalf("read %q (%v), want the command to start", line, err)
+	}
+	if runDirs, _ := filepath.Glob(filepath.Join(tmp, "c2vm*")); len(runDirs) != 1 {
+		t.Errorf("c2vm's directories in TMPDIR: %q, want one", runDirs)
+	}
+	if left, _ := filepath.Glob(filepath.Join(tmp, "c2vm*", "scratch.img")); len(left) != 0 {
+		t.Errorf("%q still there while the VM runs", left)
+	}
+
+	io.Copy(io.Discard, stdout)
+	waited = true
+	if err := cmd.Wait(); err != nil {
+		t.Errorf("c2vm: %v", err)
+	}
+	if entries, _ := os.ReadDir(tmp); len(entries) != 0 {
+		t.Errorf("%d entries left in TMPDIR once c2vm exited", len(entries))
+	}
+}
+
+// TestScratchKernelFile checks that -scratch with a kernel file, which
+// has no mkfs.ext4, fails before booting, saying why.
+func TestScratchKernelFile(t *testing.T) {
+	t.Parallel()
+	kernel := filepath.Join(t.TempDir(), "vmlinux")
+	if err := os.WriteFile(kernel, []byte("not a kernel"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, stderr, code := bootOutputs(t, bootCmd(t, "-kernel", kernel, "-scratch", "64M", image, "--", "true"))
+	if code == 0 {
+		t.Error("exit status 0, want c2vm to refuse")
+	}
+	if !strings.Contains(stderr, "without the mkfs.ext4 a scratch disk needs") {
+		t.Errorf("stderr %q, want it to say mkfs.ext4 is missing", stderr)
 	}
 }
 

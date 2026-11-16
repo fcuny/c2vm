@@ -12,15 +12,18 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/renameio/v2"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 
 	"fcuny.net/c2vm/internal/cache"
@@ -216,6 +219,75 @@ type bootOptions struct {
 	stdin bool
 	// volumes are the host's directories to mount in the VM.
 	volumes volumeFlag
+	// scratch is the size of the scratch disk that holds the overlay's
+	// writable layer, in bytes. Without it, the writable layer is a
+	// tmpfs.
+	scratch sizeFlag
+}
+
+// The sizes -scratch accepts. Below the minimum, ext4's own metadata
+// takes a good part of the disk. Past the maximum, the disk is likely a
+// typo, and mke2fs would spend long writing metadata for it.
+const (
+	minScratch = 64 << 20
+	maxScratch = 64 << 40
+)
+
+// sizeFlag is a size in bytes, given with a binary unit: 512M, 20G, 1T.
+type sizeFlag int64
+
+func (s *sizeFlag) String() string {
+	if *s == 0 {
+		return ""
+	}
+	return formatSize(int64(*s))
+}
+
+func (s *sizeFlag) Set(value string) error {
+	size, err := parseSize(value)
+	if err != nil {
+		return err
+	}
+	*s = sizeFlag(size)
+	return nil
+}
+
+// sizeUnits are the units parseSize and formatSize know, largest first.
+var sizeUnits = []struct {
+	suffix string
+	shift  uint
+}{{"T", 40}, {"G", 30}, {"M", 20}}
+
+// parseSize parses a size with a binary unit, M, G or T, e.g. 20G.
+func parseSize(value string) (int64, error) {
+	invalid := fmt.Errorf("invalid size %q: expected a number followed by M, G or T, e.g. 20G", value)
+	for _, unit := range sizeUnits {
+		number, ok := strings.CutSuffix(strings.ToUpper(value), unit.suffix)
+		if !ok {
+			continue
+		}
+		// Unsigned, so that a sign, + included, is refused.
+		n, err := strconv.ParseUint(number, 10, 64)
+		if err != nil || n < 1 {
+			return 0, invalid
+		}
+		if n > math.MaxInt64>>unit.shift {
+			return 0, fmt.Errorf("invalid size %q: too large", value)
+		}
+		return int64(n) << unit.shift, nil
+	}
+	return 0, invalid
+}
+
+// formatSize formats a size in bytes with the largest unit that divides
+// it, or in MiB, rounded down.
+func formatSize(size int64) string {
+	for _, unit := range sizeUnits {
+		if size%(1<<unit.shift) == 0 {
+			return strconv.FormatInt(size>>unit.shift, 10) + unit.suffix
+		}
+	}
+	return strconv.FormatInt(size>>20, 10) + "M"
 }
 
 // volume is a directory of the host, mounted in the VM.
@@ -322,7 +394,7 @@ func parseBoot(args []string) (bootOptions, error) {
 		fs.PrintDefaults()
 	}
 	finish := opts.register(fs)
-	fs.StringVar(&opts.kernel, "kernel", defaultKernel, "Kernel to boot: a file, or an image with the kernel in "+kernelPath)
+	fs.StringVar(&opts.kernel, "kernel", defaultKernel, "Kernel to boot: a file, an image with the kernel in "+kernelPath+", or a directory laid out like one")
 	fs.StringVar(&opts.initBinary, "init", "", "Path to a c2vm-init binary to boot (default: the one built into c2vm)")
 	fs.Int64Var(&opts.cpus, "cpus", 1, "Number of vCPUs")
 	fs.Int64Var(&opts.memoryMiB, "memory", 512, "Memory for the VM, in MiB")
@@ -331,6 +403,7 @@ func parseBoot(args []string) (bootOptions, error) {
 	fs.BoolVar(&opts.tty, "it", false, "Same as -t")
 	fs.BoolVar(&opts.stdin, "i", false, "Pass stdin to the command, which otherwise reads /dev/null")
 	fs.Var(&opts.volumes, "v", "Mount a directory of the host, as source:target, with :ro to make it read-only (repeatable)")
+	fs.Var(&opts.scratch, "scratch", "Hold what the command writes on a disk of this size, from "+formatSize(minScratch)+" to "+formatSize(maxScratch)+", e.g. 20G, thrown away with the VM, instead of in memory (needs mkfs.ext4 from the kernel image)")
 	opts.backend = backendFlags(fs)
 
 	args, command, hasCommand := splitCommand(args)
@@ -350,6 +423,9 @@ func parseBoot(args []string) (bootOptions, error) {
 	}
 	if opts.memoryMiB < 1 {
 		return bootOptions{}, errors.New("-memory must be at least 1")
+	}
+	if opts.scratch != 0 && (opts.scratch < minScratch || opts.scratch > maxScratch) {
+		return bootOptions{}, fmt.Errorf("-scratch must be between %s and %s", formatSize(minScratch), formatSize(maxScratch))
 	}
 	return opts, finish()
 }
@@ -372,9 +448,15 @@ func runBoot(args []string) error {
 
 	ctx := context.Background()
 
-	kernel, err := resolveKernel(ctx, opts.kernel, opts.cacheDir)
+	kernel, err := resolveKernel(ctx, opts.kernel, opts.cacheDir, opts.scratch != 0)
 	if err != nil {
 		return err
+	}
+	var mkfs []byte
+	if kernel.mkfs != "" {
+		if mkfs, err = readMkfs(kernel.mkfs); err != nil {
+			return err
+		}
 	}
 
 	imageConfig, imagePath, err := pullImage(ctx, opts.commonOptions)
@@ -413,8 +495,26 @@ func runBoot(args []string) error {
 	}
 	defer os.RemoveAll(runDir)
 
+	var scratch string
+	var started func()
+	if opts.scratch != 0 {
+		scratch = filepath.Join(runDir, "scratch.img")
+		if err := createScratch(scratch, int64(opts.scratch)); err != nil {
+			return fmt.Errorf("failed to create the scratch disk: %w", err)
+		}
+		config.Scratch = &guest.ScratchDisk{Device: vm.ScratchDevice, FSType: guest.FSTypeExt4}
+		// The hypervisor keeps the disk open while the VM runs, so it
+		// can go now: what the VM writes to it is freed when the VM
+		// stops, even if c2vm is killed and can't remove runDir.
+		started = func() {
+			if err := os.Remove(scratch); err != nil {
+				log.Printf("warning: removing the scratch disk: %v\n", err)
+			}
+		}
+	}
+
 	initrd := filepath.Join(runDir, "initrd.cpio")
-	if err := writeInitramfs(initrd, init, config); err != nil {
+	if err := writeInitramfs(initrd, init, config, mkfs); err != nil {
 		return fmt.Errorf("failed to build the initramfs: %w", err)
 	}
 
@@ -426,9 +526,11 @@ func runBoot(args []string) error {
 	}
 
 	code, err := backend.Run(ctx, vm.Spec{
-		Kernel:    kernel,
+		Kernel:    kernel.kernel,
 		Initrd:    initrd,
 		Image:     imagePath,
+		Scratch:   scratch,
+		Started:   started,
 		CPUs:      opts.cpus,
 		MemoryMiB: opts.memoryMiB,
 		TTY:       config.TTY,
@@ -576,14 +678,43 @@ func copyFile(src, dst string) error {
 	return f.CloseAtomicallyReplace()
 }
 
-func writeInitramfs(path string, init []byte, config guest.Config) error {
+func writeInitramfs(path string, init []byte, config guest.Config, mkfs []byte) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
-	if err := initramfs.Write(f, init, config); err != nil {
+	if err := initramfs.Write(f, init, config, mkfs); err != nil {
 		f.Close()
 		return err
 	}
 	return f.Close()
+}
+
+// createScratch creates the scratch disk at path: a sparse file of the
+// given size, which only takes the space the VM writes to it. It warns
+// when the filesystem has less space free than that, as the VM would
+// then see I/O errors once it's full.
+func createScratch(path string, size int64) error {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if err := f.Truncate(size); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+
+	var st unix.Statfs_t
+	if err := unix.Statfs(path, &st); err != nil {
+		log.Printf("warning: can't tell how much space is free for the scratch disk: %v\n", err)
+		return nil
+	}
+	if free := int64(st.Bavail) * int64(st.Bsize); free < size {
+		log.Printf("warning: the scratch disk can grow to %s, but $TMPDIR (%s) only has %s free: the command gets I/O errors past that\n",
+			formatSize(size), os.TempDir(), formatSize(free))
+	}
+	return nil
 }

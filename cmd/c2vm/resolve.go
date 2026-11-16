@@ -78,7 +78,19 @@ func resolve(ctx context.Context, c *cache.Cache, ref string, platform v1.Platfo
 			return resolved{}, pullErr
 		}
 		rec, ok, err := c.Ref(r.Name(), platform)
-		if err != nil || !ok || !cached(rec.Digest) {
+		if err != nil || !ok {
+			return resolved{}, pullErr
+		}
+		if !cached(rec.Digest) {
+			var missing []string
+			for _, kind := range kinds {
+				if !c.Has(kind, rec.Digest) {
+					missing = append(missing, kind)
+				}
+			}
+			if len(missing) < len(kinds) {
+				return resolved{}, &partlyCachedError{err: pullErr, missing: missing}
+			}
 			return resolved{}, pullErr
 		}
 		log.Printf("warning: %v\n", pullErr)
@@ -88,6 +100,18 @@ func resolve(ctx context.Context, c *cache.Cache, ref string, platform v1.Platfo
 	res.record = func() error { return c.SetRef(r.Name(), platform, res.digest) }
 	return res, nil
 }
+
+// partlyCachedError is resolve's error when the registry couldn't answer,
+// and only some kinds of the files the reference last resolved to are in
+// the cache: the missing ones need the registry.
+type partlyCachedError struct {
+	err error
+	// missing are the kinds that aren't in the cache.
+	missing []string
+}
+
+func (e *partlyCachedError) Error() string { return e.err.Error() }
+func (e *partlyCachedError) Unwrap() error { return e.err }
 
 // lookupTimeout bounds the lookup of a reference's digest. Without it,
 // a registry that accepts the connection and then never answers would

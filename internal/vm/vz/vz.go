@@ -88,7 +88,24 @@ func configuration(spec vm.Spec, command, kernel serialPort) (*vz.VirtualMachine
 	if err != nil {
 		return nil, fmt.Errorf("image %s: %w", spec.Image, err)
 	}
-	config.SetStorageDevicesVirtualMachineConfiguration([]vz.StorageDeviceConfiguration{block})
+	// The guest names the disks in this order: the image is /dev/vda,
+	// and the scratch disk vm.ScratchDevice.
+	disks := []vz.StorageDeviceConfiguration{block}
+	if spec.Scratch != "" {
+		// Its contents are thrown away with the VM, so the host never
+		// has to flush them to storage when the guest asks it to.
+		scratch, err := vz.NewDiskImageStorageDeviceAttachmentWithCacheAndSync(spec.Scratch, false,
+			vz.DiskImageCachingModeAutomatic, vz.DiskImageSynchronizationModeNone)
+		if err != nil {
+			return nil, fmt.Errorf("scratch disk %s: %w", spec.Scratch, err)
+		}
+		block, err := vz.NewVirtioBlockDeviceConfiguration(scratch)
+		if err != nil {
+			return nil, fmt.Errorf("scratch disk %s: %w", spec.Scratch, err)
+		}
+		disks = append(disks, block)
+	}
+	config.SetStorageDevicesVirtualMachineConfiguration(disks)
 
 	nat, err := vz.NewNATNetworkDeviceAttachment()
 	if err != nil {
@@ -276,6 +293,9 @@ func (b *Backend) Run(ctx context.Context, spec vm.Spec) (int, error) {
 
 	if err := machine.Start(); err != nil {
 		return 0, fmt.Errorf("failed to start the vm: %w", err)
+	}
+	if spec.Started != nil {
+		spec.Started()
 	}
 
 	var interrupted syscall.Signal

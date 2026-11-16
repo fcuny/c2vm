@@ -25,7 +25,8 @@ import (
 	"fcuny.net/c2vm/internal/guest"
 )
 
-// rootDevice is the image: the VM's first, and only, drive.
+// rootDevice is the image: the VM's first drive. A scratch disk, when
+// there's one, is the second (see guest.ScratchDisk).
 const rootDevice = "/dev/vda"
 
 func main() {
@@ -95,7 +96,7 @@ func reportStatus(status guest.Status) error {
 // adds the connections for the command's outputs to conns, and the
 // status says how many bytes it sent on them, even if it fails.
 func run(config guest.Config, conns *[]*os.File) (status guest.Status, err error) {
-	if err := switchRoot(); err != nil {
+	if err := switchRoot(config.Scratch); err != nil {
 		return status, err
 	}
 
@@ -311,9 +312,10 @@ func reap(pid int) (int, error) {
 	}
 }
 
-// switchRoot mounts the image read-only, with a tmpfs on top to hold
-// writes, and makes that the root filesystem.
-func switchRoot() error {
+// switchRoot mounts the image read-only, with a writable layer on top,
+// and makes that the root filesystem. The writable layer is a tmpfs, or
+// the scratch disk when there's one.
+func switchRoot(scratch *guest.ScratchDisk) error {
 	// With an initramfs, the kernel doesn't mount devtmpfs for us.
 	if err := unix.Mount("devtmpfs", "/dev", "devtmpfs", unix.MS_NOSUID, "mode=0755"); err != nil {
 		return fmt.Errorf("mount /dev: %w", err)
@@ -326,8 +328,8 @@ func switchRoot() error {
 	if err := unix.Mount(rootDevice, guest.LowerDir, "ext4", unix.MS_RDONLY, ""); err != nil {
 		return fmt.Errorf("mount %s: %w", rootDevice, err)
 	}
-	if err := unix.Mount("tmpfs", guest.WritableDir, "tmpfs", 0, "mode=0755"); err != nil {
-		return fmt.Errorf("mount %s: %w", guest.WritableDir, err)
+	if err := mountWritable(scratch); err != nil {
+		return err
 	}
 
 	upper := filepath.Join(guest.WritableDir, "upper")
@@ -362,6 +364,45 @@ func switchRoot() error {
 		return err
 	}
 	return unix.Chdir("/")
+}
+
+// mountWritable mounts what holds the overlay's writable layer on
+// guest.WritableDir. Without a scratch disk, it's a tmpfs, whose size
+// the kernel caps at half the VM's memory. With one, it formats the disk
+// and mounts it.
+func mountWritable(scratch *guest.ScratchDisk) error {
+	if scratch == nil {
+		if err := unix.Mount("tmpfs", guest.WritableDir, "tmpfs", 0, "mode=0755"); err != nil {
+			return fmt.Errorf("mount %s: %w", guest.WritableDir, err)
+		}
+		return nil
+	}
+
+	if err := waitFor(scratch.Device, 5*time.Second); err != nil {
+		return err
+	}
+	// The disk is thrown away with the VM, which shapes the options:
+	//   - no journal: there's nothing to recover after a crash;
+	//   - no blocks reserved for root (-m 0): the command may run as
+	//     another user, and would lose 5% of the disk;
+	//   - the inode tables aren't zeroed, neither by mke2fs
+	//     (lazy_itable_init) nor in the background once mounted
+	//     (noinit_itable, below). ext4 only reads the part of each
+	//     group's table that's in use; zeroing the rest helps e2fsck
+	//     after corruption, and would write it all out to the host's
+	//     sparse file.
+	// An empty environment: mke2fs uses its built-in defaults, as there's
+	// no /etc/mke2fs.conf in the initramfs.
+	mkfs := exec.Command(guest.MkfsPath, "-F", "-q", "-t", scratch.FSType,
+		"-O", "^has_journal", "-m", "0", "-E", "lazy_itable_init=1,nodiscard", scratch.Device)
+	mkfs.Env = []string{}
+	if out, err := mkfs.CombinedOutput(); err != nil {
+		return fmt.Errorf("formatting %s: %w\n%s", scratch.Device, err, out)
+	}
+	if err := unix.Mount(scratch.Device, guest.WritableDir, scratch.FSType, unix.MS_NOATIME, "noinit_itable"); err != nil {
+		return fmt.Errorf("mount %s on %s: %w", scratch.Device, guest.WritableDir, err)
+	}
+	return nil
 }
 
 // waitFor waits for a device node to appear, in case its driver probes

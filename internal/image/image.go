@@ -160,28 +160,42 @@ func (i *Image) WriteExt4(w io.ReadWriteSeeker) error {
 	return nil
 }
 
-// ExtractFile copies the file at name in the image's filesystem to w.
-func (i *Image) ExtractFile(name string, w io.Writer) error {
+// ReadFiles reads the files at names in the image's filesystem, in one
+// pass over its layers: a pulled image's layers come from the registry
+// each time they're read. It returns their contents by name, as given; a
+// name the image doesn't have is left out, for the caller to decide
+// whether that's an error. Each name must be a regular file, if it's
+// there.
+func (i *Image) ReadFiles(names ...string) (map[string][]byte, error) {
+	want := map[string]string{}
+	for _, name := range names {
+		want[path.Clean(path.Join("/", name))] = name
+	}
+
 	rc := mutate.Extract(i.image)
 	defer rc.Close()
 
-	want := path.Clean(path.Join("/", name))
+	files := map[string][]byte{}
 	tr := tar.NewReader(rc)
-	for {
+	for len(files) < len(want) {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
-			return fmt.Errorf("%s has no %s", i.ref, want)
+			break
 		}
 		if err != nil {
-			return err
+			return nil, err
 		}
-		if path.Clean(path.Join("/", hdr.Name)) != want {
+		clean := path.Clean(path.Join("/", hdr.Name))
+		name, ok := want[clean]
+		if !ok {
 			continue
 		}
 		if hdr.Typeflag != tar.TypeReg {
-			return fmt.Errorf("%s in %s is not a regular file", want, i.ref)
+			return nil, fmt.Errorf("%s in %s is not a regular file", clean, i.ref)
 		}
-		_, err = io.Copy(w, tr)
-		return err
+		if files[name], err = io.ReadAll(tr); err != nil {
+			return nil, err
+		}
 	}
+	return files, nil
 }

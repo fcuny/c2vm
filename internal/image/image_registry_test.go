@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/google/go-containerregistry/pkg/name"
@@ -101,7 +100,7 @@ func pull(t *testing.T, ref string) *Image {
 	return img
 }
 
-func TestExtractFile(t *testing.T) {
+func TestReadFiles(t *testing.T) {
 	ref := pushTestImage(t,
 		layer(t, file{name: "boot", dir: true}, file{name: "boot/kernel", data: "old kernel"}),
 		// A later layer replaces the file.
@@ -109,20 +108,23 @@ func TestExtractFile(t *testing.T) {
 	)
 	img := pull(t, ref)
 
-	var buf bytes.Buffer
-	if err := img.ExtractFile("/boot/kernel", &buf); err != nil {
+	files, err := img.ReadFiles("/boot/kernel", "boot/config", "/boot/missing")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if buf.String() != "new kernel" {
-		t.Errorf("extracted %q, want the last layer's version", buf.String())
+	if got := string(files["/boot/kernel"]); got != "new kernel" {
+		t.Errorf("read %q, want the last layer's version", got)
+	}
+	// By the name as given.
+	if got := string(files["boot/config"]); got != "CONFIG_X=y" {
+		t.Errorf("boot/config = %q", got)
+	}
+	if _, ok := files["/boot/missing"]; ok || len(files) != 2 {
+		t.Errorf("files = %q, want the missing one left out", files)
 	}
 
-	err := img.ExtractFile("/boot/missing", io.Discard)
-	if err == nil || !strings.Contains(err.Error(), "has no /boot/missing") {
-		t.Errorf("ExtractFile of a missing file = %v", err)
-	}
-	if err := img.ExtractFile("/boot", io.Discard); err == nil {
-		t.Error("ExtractFile of a directory should fail")
+	if _, err := img.ReadFiles("/boot"); err == nil {
+		t.Error("ReadFiles of a directory should fail")
 	}
 }
 
