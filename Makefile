@@ -1,3 +1,13 @@
+# The oldest macOS c2vm runs on. Without it, the linker stamps the SDK's
+# version, and c2vm only runs on the macOS it was built on or newer. As
+# CGO flags, unlike MACOSX_DEPLOYMENT_TARGET, it's part of the build
+# cache's key.
+MACOS_MIN := 26.0
+ifeq ($(shell uname -s),Darwin)
+export CGO_CFLAGS := -O2 -g -mmacosx-version-min=$(MACOS_MIN)
+export CGO_LDFLAGS := -mmacosx-version-min=$(MACOS_MIN)
+endif
+
 .PHONY: build
 build:
 # The init runs in the VM: a static Linux binary for arm64, the only
@@ -16,3 +26,8 @@ endif
 .PHONY: e2e
 e2e:
 	@C2VM_E2E=1 go test -count=1 -timeout 30m -v ./e2e
+
+# For the release workflow, which checks the binary against it.
+.PHONY: macos-min
+macos-min:
+	@echo $(MACOS_MIN)
