@@ -726,8 +726,8 @@ func TestLargeOutput(t *testing.T) {
 }
 
 // TestOutputBeforeExit checks what the command writes right before it
-// exits isn't lost, though a process it left in the background still
-// holds its outputs.
+// exits isn't lost, and the VM stops though a process it left in the
+// background held its outputs: init kills it.
 func TestOutputBeforeExit(t *testing.T) {
 	t.Parallel()
 	stdout, stderr, code := bootOutputs(t, bootCmd(t, image, "--", "sh", "-c", "sleep 600 & echo out; echo err >&2; exit 5"))
@@ -779,15 +779,30 @@ func TestStdoutClosed(t *testing.T) {
 
 // TestBackgroundWriter checks the VM stops once the command exits,
 // though a process it left in the background writes to its stdout
-// faster than c2vm can pass it on.
+// faster than c2vm can pass it on, whether it has been writing for a
+// while or has only just started.
 func TestBackgroundWriter(t *testing.T) {
 	t.Parallel()
-	cmd := bootCmd(t, image, "--", "sh", "-c", "yes & sleep 1; exit 6")
-	var stderr strings.Builder
-	cmd.Stdout, cmd.Stderr = io.Discard, &stderr
-	_ = cmd.Run()
-	if code := cmd.ProcessState.ExitCode(); code != 6 {
-		t.Errorf("exit status %d, want 6\nstderr:\n%s", code, stderr.String())
+	for _, tc := range []struct {
+		script string
+		code   int
+	}{
+		{"yes & sleep 1; exit 6", 6},
+		{"yes & exit 0", 0},
+	} {
+		t.Run(tc.script, func(t *testing.T) {
+			t.Parallel()
+			cmd := bootCmd(t, image, "--", "sh", "-c", tc.script)
+			var stderr strings.Builder
+			cmd.Stdout, cmd.Stderr = io.Discard, &stderr
+			_ = cmd.Run()
+			if code := cmd.ProcessState.ExitCode(); code != tc.code {
+				t.Errorf("exit status %d, want %d\nstderr:\n%s", code, tc.code, stderr.String())
+			}
+			if strings.Contains(stderr.String(), "processes left behind") {
+				t.Errorf("init failed to kill what the command left behind:\n%s", stderr.String())
+			}
+		})
 	}
 }
 
@@ -1078,6 +1093,19 @@ func TestTTY(t *testing.T) {
 	}
 	if !hasLine(out, "24 80") {
 		t.Errorf("output %q, want the terminal's size, 24 80", out)
+	}
+}
+
+// TestTTYBackground checks init's killing of what the command left
+// behind ends with -t, with a process that ignores the SIGHUP the kernel
+// sends when the session leader exits. Init doesn't wait for the
+// console's output to end, so the VM would stop without the kill too.
+func TestTTYBackground(t *testing.T) {
+	t.Parallel()
+	term := startTerminal(t, bootCmd(t, "-t", image, "--", "sh", "-c", "trap '' HUP; sleep 600 & exit 3"), pty.Winsize{Rows: 24, Cols: 80})
+	out, code := term.wait()
+	if code != 3 {
+		t.Errorf("exit status %d, want 3\noutput:\n%s", code, out)
 	}
 }
 
