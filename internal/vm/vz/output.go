@@ -9,7 +9,6 @@ import (
 	"log"
 	"sync"
 
-	"github.com/Code-Hex/vz/v3"
 	"golang.org/x/sys/unix"
 )
 
@@ -36,8 +35,8 @@ func newOutput(name string) *output {
 
 // receiveOutput copies what init sends on port, the command's output
 // called name, to w, once it connects.
-func receiveOutput(machine *vz.VirtualMachine, port uint32, name string, w io.Writer) (*output, error) {
-	listener, err := listen(machine, port)
+func receiveOutput(host *vsockHost, port uint32, name string, w io.Writer) (*output, error) {
+	listener, err := host.listen(port)
 	if err != nil {
 		return nil, err
 	}
@@ -45,9 +44,11 @@ func receiveOutput(machine *vz.VirtualMachine, port uint32, name string, w io.Wr
 	o := newOutput(name)
 	go func() {
 		defer listener.Close()
-		conn, err := listener.Accept()
+		conn, err := host.accept(listener)
 		if err != nil {
-			log.Printf("waiting for the command's output: %v", err)
+			if !host.closedEarly() {
+				log.Printf("waiting for the command's output: %v", err)
+			}
 			o.stop(err)
 			return
 		}

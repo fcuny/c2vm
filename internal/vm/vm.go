@@ -20,7 +20,9 @@ type Spec struct {
 	// The hypervisor keeps it open while the VM runs, so it can be
 	// removed once Started is called.
 	Scratch string
-	// Started, when set, is called once the VM has started.
+	// Started, when set, is called once the VM has started for good:
+	// init is running, and the backend won't restart the VM, which it
+	// may do before then, with the same paths.
 	Started func()
 	// CPUs is the number of vCPUs.
 	CPUs int64

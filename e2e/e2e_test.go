@@ -541,6 +541,68 @@ func TestMACConcurrent(t *testing.T) {
 	}
 }
 
+// stuckBootsEnv is how many of the VM's first boots c2vm stops as if
+// init hadn't started in time. macOS sometimes loses a VM's network,
+// which then never gets an address: c2vm restarts it. That's too rare
+// for a test to wait for.
+const stuckBootsEnv = "C2VM_STUCK_BOOTS"
+
+// restarted is what c2vm says when it restarts a VM whose init didn't
+// start in time.
+const restarted = "restarting the vm"
+
+// checkRestarts checks c2vm restarted the VM at least stuck times. A
+// boot after those can hit the race too, and be restarted once more:
+// stopping a stuck VM while the next one's network is being connected
+// is what triggers it, when no other VM keeps the NAT up.
+func checkRestarts(t *testing.T, stderr string, stuck int) {
+	t.Helper()
+	if n := strings.Count(stderr, restarted); n < stuck {
+		t.Errorf("c2vm restarted the VM %d times, want at least %d:\n%s", n, stuck, stderr)
+	}
+}
+
+// TestStuckBoot checks a VM whose init doesn't start in time is
+// restarted, and the command then runs as on a first boot: the stuck
+// boot took none of its stdin, and its output comes back whole. One
+// stuck boot leaves two for the command, in case one hits the race.
+func TestStuckBoot(t *testing.T) {
+	t.Parallel()
+	const input = "from the host\n"
+	cmd := bootCmd(t, "-i", image, "--", "cat")
+	cmd.Env = append(os.Environ(), stuckBootsEnv+"=1")
+	cmd.Stdin = strings.NewReader(input)
+	stdout, stderr, code := bootOutputs(t, cmd)
+	if code != 0 {
+		t.Errorf("exit status %d, want 0\nc2vm's stderr:\n%s", code, stderr)
+	}
+	if stdout != input {
+		t.Errorf("output %q, want %q", stdout, input)
+	}
+	checkRestarts(t, stderr, 1)
+}
+
+// TestStuckBootGivesUp checks c2vm fails, rather than restart forever,
+// when no boot's init starts in time.
+func TestStuckBootGivesUp(t *testing.T) {
+	t.Parallel()
+	cmd := bootCmd(t, image, "--", "echo", "ran")
+	cmd.Env = append(os.Environ(), stuckBootsEnv+"=3")
+	stdout, stderr, code := bootOutputs(t, cmd)
+	if code == 0 {
+		t.Errorf("exit status 0, want a failure")
+	}
+	if stdout != "" {
+		t.Errorf("output %q, want none: the command mustn't run", stdout)
+	}
+	if !strings.Contains(stderr, "3 times in a row") {
+		t.Errorf("c2vm's error doesn't say it gave up after 3 boots:\n%s", stderr)
+	}
+	if n := strings.Count(stderr, restarted); n != 2 {
+		t.Errorf("c2vm restarted the VM %d times, want 2:\n%s", n, stderr)
+	}
+}
+
 func TestResolvedDigests(t *testing.T) {
 	const kernel = "ghcr.io/fcuny/c2vm-kernel:7.3"
 	d1, d2 := "sha256:"+strings.Repeat("a", 64), "sha256:"+strings.Repeat("b", 64)
@@ -925,6 +987,23 @@ func TestScratchRemoved(t *testing.T) {
 	if entries, _ := os.ReadDir(tmp); len(entries) != 0 {
 		t.Errorf("%d entries left in TMPDIR once c2vm exited", len(entries))
 	}
+}
+
+// TestScratchStuckBoot checks a VM restarted because its init didn't
+// start in time still gets its scratch disk: c2vm removes the disk's
+// file only once a VM is up for good.
+func TestScratchStuckBoot(t *testing.T) {
+	t.Parallel()
+	cmd := scratchCmd(t, "-scratch", "64M", image, "--", "sh", "-c", "echo on-scratch >/file && cat /file")
+	cmd.Env = append(os.Environ(), stuckBootsEnv+"=1")
+	stdout, stderr, code := bootOutputs(t, cmd)
+	if code != 0 {
+		t.Errorf("exit status %d, want 0\nc2vm's stderr:\n%s", code, stderr)
+	}
+	if want := "on-scratch\n"; stdout != want {
+		t.Errorf("output %q, want %q", stdout, want)
+	}
+	checkRestarts(t, stderr, 1)
 }
 
 // TestScratchKernelFile checks that -scratch with a kernel file, which

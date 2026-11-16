@@ -30,6 +30,8 @@ import (
 const rootDevice = "/dev/vda"
 
 func main() {
+	reportUp()
+
 	// Read the configuration before switching to the image: it lives in
 	// the initramfs.
 	config, err := guest.ReadConfig(guest.ConfigPath)
@@ -61,6 +63,50 @@ func main() {
 		conn.Close()
 	}
 	shutdown(config.Shutdown)
+}
+
+// reportUp tells the host init has started, which means the kernel
+// configured the network, and waits for it to answer (see
+// guest.UpPort). If the host gave up on this VM, which it's stopping,
+// reportUp never returns: the command mustn't run in a VM the host
+// replaces.
+func reportUp() {
+	conn := dialUp()
+	defer conn.Close()
+	err := guest.ReadUp(conn)
+	switch {
+	case err == nil:
+	case errors.Is(err, guest.ErrHostGaveUp):
+		// Not shutdown: the host stops the VM itself, and the
+		// configuration that says how to shut down isn't read yet.
+		logf("%v, waiting for it to stop it", err)
+		// Not select {}: with nothing else running, Go would see a
+		// deadlock and exit, and init exiting panics the kernel.
+		for {
+			time.Sleep(time.Hour)
+		}
+	default:
+		// The host gives up only by closing the connection, so it
+		// counts this VM as up.
+		logf("%v, going on", err)
+	}
+}
+
+// dialUp connects to guest.UpPort, and tries again until it can: init
+// doesn't go on without the host's answer, and the host stops the VM if
+// none comes.
+func dialUp() *os.File {
+	for logged := false; ; {
+		fd, err := dialHost(guest.UpPort)
+		if err == nil {
+			return os.NewFile(uintptr(fd), "vsock")
+		}
+		if !logged {
+			logf("telling the host init started: %v, trying again", err)
+			logged = true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // reportStatus sends the command's exit status to the host over vsock.
