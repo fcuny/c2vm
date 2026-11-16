@@ -61,7 +61,7 @@ func TestWrite(t *testing.T) {
 	config := guest.Config{Args: []string{"nginx", "-g", "daemon off;"}, User: "nginx", Shutdown: guest.ShutdownPowerOff}
 
 	var buf bytes.Buffer
-	if err := Write(&buf, init, config); err != nil {
+	if err := Write(&buf, init, config, nil); err != nil {
 		t.Fatal(err)
 	}
 	entries := readCPIO(t, buf.Bytes())
@@ -103,6 +103,63 @@ func TestWrite(t *testing.T) {
 	if !slices.Equal(got.Args, config.Args) || got.User != "nginx" || got.Shutdown != guest.ShutdownPowerOff {
 		t.Errorf("config = %+v", got)
 	}
+	if _, ok := byName["c2vm/mkfs.ext4"]; ok {
+		t.Error("c2vm/mkfs.ext4 is there without a scratch disk")
+	}
+}
+
+func TestWriteScratch(t *testing.T) {
+	config := guest.Config{
+		Args:    []string{"true"},
+		Scratch: &guest.ScratchDisk{Device: "/dev/vdb", FSType: guest.FSTypeExt4},
+	}
+
+	var buf bytes.Buffer
+	if err := Write(&buf, []byte("init"), config, []byte("mkfs")); err != nil {
+		t.Fatal(err)
+	}
+	var mkfs, configEntry entry
+	for _, e := range readCPIO(t, buf.Bytes()) {
+		switch e.name {
+		case "c2vm/mkfs.ext4":
+			mkfs = e
+		case "c2vm/config.json":
+			configEntry = e
+		}
+	}
+	// Executable, whatever mode the file had on the host.
+	if mkfs.mode != modeRegular|0o755 || string(mkfs.data) != "mkfs" {
+		t.Errorf("c2vm/mkfs.ext4 = mode %o, %q", mkfs.mode, mkfs.data)
+	}
+	var got guest.Config
+	if err := json.Unmarshal(configEntry.data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Scratch == nil || *got.Scratch != *config.Scratch {
+		t.Errorf("scratch = %+v, want %+v", got.Scratch, config.Scratch)
+	}
+}
+
+// TestWriteScratchMismatch checks that the scratch disk and mkfs.ext4
+// come together: init can't format a disk without it, and it has no use
+// for it without one.
+func TestWriteScratchMismatch(t *testing.T) {
+	scratch := &guest.ScratchDisk{Device: "/dev/vdb", FSType: guest.FSTypeExt4}
+	for _, tc := range []struct {
+		name    string
+		scratch *guest.ScratchDisk
+		mkfs    []byte
+	}{
+		{"scratch without mkfs", scratch, nil},
+		{"mkfs without scratch", nil, []byte("mkfs")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := guest.Config{Args: []string{"true"}, Scratch: tc.scratch}
+			if err := Write(&bytes.Buffer{}, []byte("init"), config, tc.mkfs); err == nil {
+				t.Error("Write succeeded")
+			}
+		})
+	}
 }
 
 // TestWriteSystemCPIO checks the archive with the system's cpio, as a
@@ -114,7 +171,7 @@ func TestWriteSystemCPIO(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := Write(&buf, []byte("init"), guest.Config{Args: []string{"true"}}); err != nil {
+	if err := Write(&buf, []byte("init"), guest.Config{Args: []string{"true"}}, nil); err != nil {
 		t.Fatal(err)
 	}
 

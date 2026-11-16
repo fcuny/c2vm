@@ -20,13 +20,20 @@ const (
 	ConfigPath = "/c2vm/config.json"
 	// LowerDir is where init mounts the image, read-only.
 	LowerDir = "/c2vm/lower"
-	// WritableDir is where init mounts the tmpfs that holds the
-	// overlay's writable layer.
+	// WritableDir is where init mounts what holds the overlay's
+	// writable layer: a tmpfs, or the scratch disk.
 	WritableDir = "/c2vm/rw"
 	// NewRootDir is where init assembles the overlay before switching
 	// to it.
 	NewRootDir = "/c2vm/root"
+	// MkfsPath is where c2vm puts the static mkfs.ext4 from the kernel
+	// image, when the VM has a scratch disk to format.
+	MkfsPath = "/c2vm/mkfs.ext4"
 )
+
+// FSTypeExt4 is the only filesystem init formats a scratch disk with.
+// It has the xattrs overlayfs and tools like ostree and rpm need.
+const FSTypeExt4 = "ext4"
 
 // How init stops the VM once the command exits.
 const (
@@ -44,7 +51,7 @@ const (
 // init whose binary doesn't have it, which the check in init puts there.
 // Change it whenever a c2vm and a c2vm-init built apart would
 // misunderstand each other.
-const Protocol = "c2vm-init protocol 2"
+const Protocol = "c2vm-init protocol 3"
 
 // DefaultPath is the PATH used when the image doesn't set one, the same
 // as Docker's.
@@ -80,6 +87,20 @@ type Config struct {
 	// console when TTY is set.
 	Rows    uint16 `json:"rows,omitempty"`
 	Columns uint16 `json:"columns,omitempty"`
+	// Scratch is a disk for the overlay's writable layer, which init
+	// formats and mounts in place of a tmpfs. Without it, the writable
+	// layer is a tmpfs, which holds what the command writes in memory.
+	Scratch *ScratchDisk `json:"scratch,omitempty"`
+}
+
+// ScratchDisk is a disk init formats, with the mkfs.ext4 at MkfsPath,
+// to hold the overlay's writable layer. Its contents are thrown away
+// with the VM.
+type ScratchDisk struct {
+	// Device is the disk's device, e.g. /dev/vdb.
+	Device string `json:"device"`
+	// FSType is the filesystem to format it with: FSTypeExt4.
+	FSType string `json:"fstype"`
 }
 
 // FromImage returns the configuration that runs the image the way a
@@ -124,6 +145,15 @@ func ReadConfig(path string) (Config, error) {
 	case ShutdownReboot, ShutdownPowerOff:
 	default:
 		return Config{}, fmt.Errorf("%s: unknown shutdown %q", path, c.Shutdown)
+	}
+	if s := c.Scratch; s != nil {
+		// Cleaned, so that /dev/../somewhere isn't taken for a device.
+		if filepath.Clean(s.Device) != s.Device || !strings.HasPrefix(s.Device, "/dev/") {
+			return Config{}, fmt.Errorf("%s: scratch device %q isn't in /dev", path, s.Device)
+		}
+		if s.FSType != FSTypeExt4 {
+			return Config{}, fmt.Errorf("%s: unknown scratch filesystem %q", path, s.FSType)
+		}
 	}
 	return c, nil
 }

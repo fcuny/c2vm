@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"fcuny.net/c2vm/internal/guest"
@@ -252,6 +253,101 @@ func TestParseErrors(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("parsing %q = %v, want an error containing %q", tc.args, err, tc.want)
 		}
+	}
+}
+
+func TestParseBootScratch(t *testing.T) {
+	opts, err := parseBoot([]string{"-scratch", "20G", "alpine"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.scratch != 20<<30 {
+		t.Errorf("scratch = %d, want 20 GiB", opts.scratch)
+	}
+
+	opts, err = parseBoot([]string{"alpine"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.scratch != 0 {
+		t.Errorf("scratch = %d without -scratch, want 0", opts.scratch)
+	}
+
+	for _, value := range []string{"63M", "0G", "-1G", "20", "20GB", "1.5G", "", "65T"} {
+		if err := bootErr([]string{"-scratch", value, "alpine"}); err == nil {
+			t.Errorf("-scratch %q was accepted", value)
+		}
+	}
+	for _, value := range []string{"64M", "64T"} {
+		if err := bootErr([]string{"-scratch", value, "alpine"}); err != nil {
+			t.Errorf("-scratch %s: %v", value, err)
+		}
+	}
+}
+
+func TestParseSize(t *testing.T) {
+	for _, tt := range []struct {
+		in   string
+		want int64
+	}{
+		{"64M", 64 << 20},
+		{"512m", 512 << 20},
+		{"20G", 20 << 30},
+		{"1T", 1 << 40},
+	} {
+		got, err := parseSize(tt.in)
+		if err != nil || got != tt.want {
+			t.Errorf("parseSize(%q) = %d, %v, want %d", tt.in, got, err, tt.want)
+		}
+	}
+	for _, in := range []string{"", "G", "20", "20K", "20GiB", "1.5G", "0M", "-2G", "+2G", " 2G", "9999999999T"} {
+		if got, err := parseSize(in); err == nil {
+			t.Errorf("parseSize(%q) = %d, want an error", in, got)
+		}
+	}
+}
+
+func TestFormatSize(t *testing.T) {
+	for _, tt := range []struct {
+		in   int64
+		want string
+	}{
+		{64 << 20, "64M"},
+		{1 << 30, "1G"},
+		{1536 << 20, "1536M"},
+		{2 << 40, "2T"},
+		{(1 << 30) + 1, "1024M"},
+	} {
+		if got := formatSize(tt.in); got != tt.want {
+			t.Errorf("formatSize(%d) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestCreateScratch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scratch.img")
+	if err := createScratch(path, 1<<30); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Size() != 1<<30 {
+		t.Errorf("size = %d, want 1 GiB", fi.Size())
+	}
+	// Only c2vm's user can read what the command wrote.
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("mode = %o, want 600", fi.Mode().Perm())
+	}
+	// Sparse: it takes no space until the VM writes to it.
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Blocks*512 >= 1<<20 {
+		t.Errorf("%d bytes allocated, want a sparse file", st.Blocks*512)
+	}
+
+	// It never reuses a file that's already there.
+	if err := createScratch(path, 1<<30); err == nil {
+		t.Error("createScratch replaced an existing file")
 	}
 }
 

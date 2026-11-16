@@ -54,6 +54,7 @@ func TestConfigRoundTrip(t *testing.T) {
 		Columns:    120,
 		Stdin:      true,
 		Mounts:     []Mount{{Tag: "c2vm0", Target: "/src"}, {Tag: "c2vm1", Target: "/data", ReadOnly: true}},
+		Scratch:    &ScratchDisk{Device: "/dev/vdb", FSType: FSTypeExt4},
 	}
 	got := roundTrip(t, want)
 	if !reflect.DeepEqual(got, want) {
@@ -74,6 +75,28 @@ func TestConfigShutdownInvalid(t *testing.T) {
 	}
 	if _, err := ReadConfig(path); err == nil {
 		t.Error("expected an error for an unknown shutdown")
+	}
+}
+
+func TestConfigScratchInvalid(t *testing.T) {
+	for _, tc := range []struct{ name, scratch string }{
+		{"device outside /dev", `{"device": "/tmp/disk", "fstype": "ext4"}`},
+		{"device escaping /dev", `{"device": "/dev/../c2vm/disk", "fstype": "ext4"}`},
+		{"device not clean", `{"device": "/dev//vdb", "fstype": "ext4"}`},
+		{"no device", `{"fstype": "ext4"}`},
+		{"other filesystem", `{"device": "/dev/vdb", "fstype": "btrfs"}`},
+		{"no filesystem", `{"device": "/dev/vdb"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			data := `{"args": ["true"], "scratch": ` + tc.scratch + `}`
+			if err := os.WriteFile(path, []byte(data), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ReadConfig(path); err == nil {
+				t.Errorf("expected an error for scratch %s", tc.scratch)
+			}
+		})
 	}
 }
 

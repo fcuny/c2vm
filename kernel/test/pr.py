@@ -96,16 +96,18 @@ def find_run(pr: int) -> tuple[str, str, str]:
 
 
 def extract_kernel(artifact: Path) -> Path:
-    """Extracts the kernel workflow's artifact, and returns the kernel's
-    path in it. The artifact is a tarball of the image's root, which keeps
-    mkfs.ext4 executable; older runs uploaded the files themselves, with
-    the kernel in arm64/kernel."""
+    """Extracts the kernel workflow's artifact, and returns what c2vm's
+    -kernel takes. The artifact is a tarball of the image's root, which
+    keeps mkfs.ext4 executable: that's a directory laid out like the
+    image, so the tests format scratch disks with the PR's mkfs.ext4.
+    Older runs uploaded the files themselves, with only the kernel, in
+    arm64/kernel."""
     tarball = artifact / "kernel.tar"
     if not tarball.exists():
         return artifact / "arm64" / "kernel"
     with tarfile.open(tarball) as tar:
         tar.extractall(artifact, filter="data")
-    return artifact / "arm64" / "boot" / "kernel"
+    return artifact / "arm64"
 
 
 def boot(kernel: Path, release: str, tmp: Path) -> tuple[list[tuple[str, bool]], list[str]]:

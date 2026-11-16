@@ -80,7 +80,21 @@ func readFile(path string) ([]byte, error) {
 // only kind the kernel can run as /init in the VM. Anything else makes it
 // panic, which says less about what's wrong.
 func checkInit(init []byte) error {
-	f, err := elf.NewFile(bytes.NewReader(init))
+	err := checkStatic(init)
+	if errors.Is(err, errDynamic) {
+		return fmt.Errorf("%w (build it with CGO_ENABLED=0)", err)
+	}
+	return err
+}
+
+// errDynamic is checkStatic's error for a dynamically linked binary.
+var errDynamic = errors.New("is dynamically linked, it must be static")
+
+// checkStatic checks that b is a static arm64 Linux executable, the only
+// kind that runs from the initramfs, which has no dynamic loader or
+// libraries. Its errors read after the binary's name.
+func checkStatic(b []byte) error {
+	f, err := elf.NewFile(bytes.NewReader(b))
 	if err != nil {
 		return fmt.Errorf("is not an ELF binary: %w", err)
 	}
@@ -100,7 +114,7 @@ func checkInit(init []byte) error {
 	}
 	for _, p := range f.Progs {
 		if p.Type == elf.PT_INTERP {
-			return errors.New("is dynamically linked, it must be static (build it with CGO_ENABLED=0)")
+			return errDynamic
 		}
 	}
 	return nil

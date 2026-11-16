@@ -15,6 +15,13 @@ type Spec struct {
 	// Image is the path to the ext4 image of the container's
 	// filesystem. The VM sees it as /dev/vda and can't modify it.
 	Image string
+	// Scratch is the path to a disk image for the overlay's writable
+	// layer, when set. The VM sees it as ScratchDevice, and writes to it.
+	// The hypervisor keeps it open while the VM runs, so it can be
+	// removed once Started is called.
+	Scratch string
+	// Started, when set, is called once the VM has started.
+	Started func()
 	// CPUs is the number of vCPUs.
 	CPUs int64
 	// MemoryMiB is the amount of memory, in MiB.
@@ -31,6 +38,10 @@ type Spec struct {
 	// backend picks a random one when it's nil.
 	MAC net.HardwareAddr
 }
+
+// ScratchDevice is the scratch disk's device in the VM: the drive after
+// the image.
+const ScratchDevice = "/dev/vdb"
 
 // Share is a directory of the host the VM can mount.
 type Share struct {

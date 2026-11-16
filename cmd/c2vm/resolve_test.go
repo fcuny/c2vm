@@ -401,7 +401,7 @@ func TestRecordAfterFiles(t *testing.T) {
 			return err
 		}},
 		{"kernel", v1.Platform{OS: "linux", Architecture: runtime.GOARCH}, []string{"kernels"}, func(ref, cacheDir string) error {
-			_, err := resolveKernel(context.Background(), ref, cacheDir)
+			_, err := resolveKernel(context.Background(), ref, cacheDir, false)
 			return err
 		}},
 	} {

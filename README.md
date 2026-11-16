@@ -12,7 +12,7 @@ It used to do that with containerd and Firecracker, on Linux. As I work on a mac
 
 Docker Desktop and `podman machine` run one long-lived Linux VM that all containers share. c2vm boots a VM per command, from any image, with its own kernel, as root unless the image sets a user, and nothing left behind in the VM when it stops (the converted image and the kernel stay cached on the Mac). That makes it handy for:
 
-- **A disposable Linux machine for something quick**: try a Linux-only tool, without setting anything up and with a fresh root filesystem every time. For example, pulling a Fedora IoT OSTree commit, composing a new commit with an extra RPM, signing it, serving it over HTTP and deploying it into a scratch sysroot, all in one `./c2vm boot -memory 10240 fedora -- …`.
+- **A disposable Linux machine for something quick**: try a Linux-only tool, without setting anything up and with a fresh root filesystem every time. For example, pulling a Fedora IoT OSTree commit, composing a new commit with an extra RPM, signing it, serving it over HTTP and deploying it into a scratch sysroot, all in one `./c2vm boot -scratch 20G fedora -- …`.
 - **Checking a script against several distros**, since `c2vm boot` exits with the command's status:
 
   ```sh
@@ -27,9 +27,9 @@ Docker Desktop and `podman machine` run one long-lived Linux VM that all contain
 
 Some limits to keep in mind:
 
-- The writable layer is in memory, capped at half of `-memory`, so jobs that write a lot outside a `-v` mount need a big VM ([#40](https://github.com/fcuny/c2vm/issues/40)).
+- By default, the writable layer is in memory, capped at half of `-memory`. Jobs that write a lot outside a `-v` mount need `-scratch` (see below), or a big VM.
 - On a `-v` mount, root gets no exemption from mode bits: it can't write a read-only file, remove a file from a read-only directory (`rm -rf` on a Go module cache), or even open a file it just created with mode 0. This comes from the virtiofs server, Virtualization.framework's `VZSharedDirectory`, not from c2vm ([#57](https://github.com/fcuny/c2vm/issues/57)).
-  - GNU tar fails with `Cannot open: Permission denied` on a symlink whose target is absolute or has `..` in it, and on hard links to those, because it extracts them as mode-0 placeholders first. Rootfs, distro and kernel tarballs are full of them. Use `tar -P` for an archive you trust, or extract outside the mount, on the writable layer, which needs a big enough `-memory` (a kernel tree takes about 3 GiB, see [building c2vm's kernel](docs/examples/build-kernel.md)).
+  - GNU tar fails with `Cannot open: Permission denied` on a symlink whose target is absolute or has `..` in it, and on hard links to those, because it extracts them as mode-0 placeholders first. Rootfs, distro and kernel tarballs are full of them. Use `tar -P` for an archive you trust, or extract outside the mount, on the writable layer, which needs `-scratch` or a big enough `-memory` (a kernel tree takes about 3 GiB, see [building c2vm's kernel](docs/examples/build-kernel.md)).
 - It runs on macOS on Apple silicon only, and boots arm64 images only: the kernel is arm64 and there's no Rosetta, so a `-platform linux/amd64` image pulls but its binaries can't run.
 
 ## How
@@ -71,6 +71,12 @@ cat run.sh | ./c2vm boot -i fedora -- bash
 
 `c2vm boot` exits with the command's exit status, which `c2vm-init` sends to the host over vsock before stopping the VM.
 
+`-scratch SIZE` (`64M` to `64T`, e.g. `20G`) puts the writable layer on a disk of that size instead of in memory, for jobs that write a lot: installing packages, building, pulling data. The disk is a sparse file in `$TMPDIR`, so it only takes the space the VM writes to it. `c2vm-init` formats it as ext4 with the `mkfs.ext4` that ships in the kernel image, so overlayfs, and tools like ostree, rpm and podman, get the extended attributes they need. It's thrown away with the VM, as the in-memory layer is: c2vm removes its file once the VM has started, and the space is freed when the VM stops, even if c2vm is killed. c2vm warns when `$TMPDIR` has less space free than `SIZE`; past that, the command gets I/O errors.
+
+```sh
+./c2vm boot -scratch 20G fedora -- dnf install -y gcc
+```
+
 `-e KEY=value` adds a variable to the image's environment, or replaces it; `-e KEY` copies it from your shell:
 
 ```sh
@@ -91,7 +97,7 @@ Images are pulled from their registry, with short names resolved as docker does 
 
 Each image is converted to a read-only ext4 filesystem, without mounting anything or needing root, and cached by digest in `~/Library/Caches/c2vm` (`-cache-dir` to change it), with its configuration. Booting an image again only checks which digest its tag points to, and booting it by digest (`alpine@sha256:…`) doesn't ask the registry at all. If the registry can't answer (no network, a TLS failure, a rate limit, a server error, or no answer within 30 s), c2vm boots the digest the tag last resolved to, if it's cached, and warns that it may be out of date. Any other answer, like an unknown tag or a denied request, still fails. The kernel works the same way.
 
-At boot, `c2vm-init` runs from an initramfs: it mounts the image with a writable in-memory layer on top, and runs the image's entrypoint and command as the image's user, from its working directory and with its environment. Changes are lost when the VM stops.
+At boot, `c2vm-init` runs from an initramfs: it mounts the image with a writable layer on top, in memory or on the `-scratch` disk, and runs the image's entrypoint and command as the image's user, from its working directory and with its environment. Changes are lost when the VM stops.
 
 `c2vm-init` is a static Linux binary for arm64, the only architecture the VMs run, which `make build` builds and embeds in `c2vm`, so `c2vm` is the only file to copy around. `c2vm version` prints the version of the one built in, or says there's none. `-init` boots another one, to try changes to it without rebuilding `c2vm`.
 
@@ -116,7 +122,7 @@ sudo rm /var/db/dhcpd_leases
 
 ### Kernel
 
-`c2vm boot` pulls a kernel of a recent stable series, the one `cmd/c2vm/kernel.go` names, built with [a minimal config for microVMs](kernel/), from `ghcr.io/fcuny/c2vm-kernel:7.3` (for arm64, with the kernel in `/boot/kernel`), and caches it. `-kernel` takes another image, or a kernel file. To extract the kernel yourself:
+`c2vm boot` pulls a kernel of a recent stable series, the one `cmd/c2vm/kernel.go` names, built with [a minimal config for microVMs](kernel/), from `ghcr.io/fcuny/c2vm-kernel:7.3` (for arm64, with the kernel in `/boot/kernel`, and the static `mkfs.ext4` for `-scratch` in `/sbin/mkfs.ext4`), and caches it. `-kernel` takes another image, a directory laid out like one (`boot/kernel`, and a static arm64 `sbin/mkfs.ext4` for `-scratch`), or a kernel file, which can't be used with `-scratch`. To extract the kernel yourself:
 
 ```sh
 crane export ghcr.io/fcuny/c2vm-kernel:7.3 - | tar -x boot/kernel
@@ -138,4 +144,4 @@ Virtualization.framework only lets binaries signed with the `com.apple.security.
 
 ### Testing
 
-`go test ./...` runs the unit tests, which don't boot anything. `make e2e` builds c2vm, with c2vm-init embedded, and boots VMs with them, from `alpine`, to check what commands see and do in the VM: their output and exit status, `-e`, `-i`, `-t`, `-v`, `-init`, and that VMs reuse MAC addresses. It boots the default kernel, or `C2VM_E2E_KERNEL`: an image, like `ghcr.io/fcuny/c2vm-kernel:7.3`, or a kernel file by its absolute path. It needs macOS on Apple silicon and the network. CI can't run it, as GitHub's macOS runners can't boot VMs: run it before opening a PR.
+`go test ./...` runs the unit tests, which don't boot anything. `make e2e` builds c2vm, with c2vm-init embedded, and boots VMs with them, from `alpine`, to check what commands see and do in the VM: their output and exit status, `-e`, `-i`, `-t`, `-v`, `-init`, `-scratch`, and that VMs reuse MAC addresses. It boots the default kernel, or `C2VM_E2E_KERNEL`: an image, like `ghcr.io/fcuny/c2vm-kernel:7.3`, or by its absolute path a directory laid out like one, or a kernel file, with which the `-scratch` tests are skipped. It needs macOS on Apple silicon and the network. CI can't run it, as GitHub's macOS runners can't boot VMs: run it before opening a PR.
