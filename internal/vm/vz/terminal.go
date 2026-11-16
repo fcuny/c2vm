@@ -28,25 +28,27 @@ type terminal struct {
 	fd    int
 	state *term.State
 	once  sync.Once
+	log   io.Writer // where log writes once the terminal is restored
 }
 
 // rawTerminal puts f's terminal in raw mode, so every key goes to the
-// guest, which echoes and processes them.
-func rawTerminal(f *os.File) (*terminal, error) {
+// guest, which echoes and processes them. Until restore, log writes to
+// logOutput with lines ending in \r\n.
+func rawTerminal(f *os.File, logOutput io.Writer) (*terminal, error) {
 	fd := int(f.Fd())
 	state, err := term.MakeRaw(fd)
 	if err != nil {
 		return nil, err
 	}
-	log.SetOutput(crlfWriter{os.Stderr})
-	return &terminal{fd: fd, state: state}, nil
+	log.SetOutput(crlfWriter{logOutput})
+	return &terminal{fd: fd, state: state, log: logOutput}, nil
 }
 
 // restore restores the terminal's previous mode. It's safe to call more
 // than once.
 func (t *terminal) restore() {
 	t.once.Do(func() {
-		log.SetOutput(os.Stderr)
+		log.SetOutput(t.log)
 		_ = term.Restore(t.fd, t.state)
 		// Virtualization.framework makes the terminal non-blocking,
 		// which the shell we return to doesn't expect.

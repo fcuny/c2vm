@@ -46,7 +46,27 @@ type console struct {
 	grace    *time.Timer // started with the panic
 	// tail is the end of what was read, for markers split across reads.
 	tail []byte
+	// mu guards line, held and lineWait's timer: the timer flushes the
+	// line from its own goroutine.
+	mu sync.Mutex
+	// line is the start of a line not written yet: see write.
+	line []byte
+	// lineWait is how long the start of a line waits for its end before
+	// it's written anyway; zero holds it until drain. held flushes it
+	// from due on.
+	lineWait time.Duration
+	held     *time.Timer
+	due      time.Time
 }
+
+// maxLine is the most of a line the console holds before writing it
+// anyway, for output that has no newlines.
+const maxLine = 4096
+
+// lineWait is how long the console holds the start of a line, so
+// what's printed before a hang shows up, even if c2vm is killed then.
+// The guest's tty passes a line's pieces within microseconds.
+const lineWait = 100 * time.Millisecond
 
 // watchConsole copies what the VM writes to the returned console's
 // port to w, until drain is called. Nothing is written to the port's
@@ -69,6 +89,7 @@ func watchConsole(w io.Writer) (*console, error) {
 		w:        w,
 		done:     make(chan struct{}),
 		panicked: make(chan struct{}),
+		lineWait: lineWait,
 	}
 	go c.copy()
 	return c, nil
@@ -86,14 +107,81 @@ func (c *console) copy() {
 	}
 }
 
+// write writes whole lines of p to w, each in one write, and holds the
+// rest until its line ends, or for lineWait. w is shared with the
+// command's stderr, and the guest's tty may pass a line and its "\r\n"
+// in separate reads: the command's output would otherwise land in the
+// middle of the line.
 func (c *console) write(p []byte) {
 	if len(p) == 0 {
 		return
 	}
 	c.scan(p)
-	// Like the guest's writes to the console, these don't fail when
-	// nothing reads them.
-	_, _ = c.w.Write(p)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	wasHeld := len(c.line) > 0
+	c.line = append(c.line, p...)
+	end := bytes.LastIndexByte(c.line, '\n') + 1
+	if len(c.line)-end >= maxLine {
+		end = len(c.line)
+	}
+	if end > 0 {
+		// Like the guest's writes to the console, these don't fail
+		// when nothing reads them.
+		_, _ = c.w.Write(c.line[:end])
+		c.line = append(c.line[:0], c.line[end:]...)
+	}
+	// The wait starts with the line, so one that grows a byte at a
+	// time is still written.
+	switch {
+	case len(c.line) == 0:
+		if c.held != nil {
+			c.held.Stop()
+		}
+	case end > 0 || !wasHeld:
+		c.holdLine()
+	}
+}
+
+// holdLine starts the wait for the end of the line that was just
+// started.
+func (c *console) holdLine() {
+	if c.lineWait == 0 {
+		return
+	}
+	c.due = time.Now().Add(c.lineWait)
+	if c.held == nil {
+		c.held = time.AfterFunc(c.lineWait, c.flushDue)
+		return
+	}
+	c.held.Reset(c.lineWait)
+}
+
+// flushDue writes what's held of a line once it has waited lineWait.
+// The timer may have fired for a line that ended since, while write
+// held mu: Reset doesn't stop a run that started, so check.
+func (c *console) flushDue() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if time.Now().Before(c.due) {
+		return
+	}
+	c.flushLocked()
+}
+
+// flush writes what's held of a line that hasn't ended.
+func (c *console) flush() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.flushLocked()
+}
+
+func (c *console) flushLocked() {
+	if len(c.line) > 0 {
+		_, _ = c.w.Write(c.line)
+		c.line = c.line[:0]
+	}
 }
 
 // scan looks for the start and end of a panic in p, which follows what
@@ -123,6 +211,12 @@ func (c *console) drain() {
 	_ = c.r.SetReadDeadline(time.Now())
 	<-c.done
 	defer func() {
+		c.flush()
+		c.mu.Lock()
+		if c.held != nil {
+			c.held.Stop()
+		}
+		c.mu.Unlock()
 		if c.grace != nil {
 			c.grace.Stop()
 		}

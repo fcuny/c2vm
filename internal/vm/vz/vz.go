@@ -182,9 +182,11 @@ func configuration(spec vm.Spec, command, kernel serialPort) (*vz.VirtualMachine
 // its own, and with spec.Stdin, stdin goes to the command over vsock.
 // Run fails if either arrives cut short.
 func (b *Backend) Run(ctx context.Context, spec vm.Spec) (int, error) {
-	// The kernel's console and the command's stderr both write to
-	// stderr.
+	// The kernel's console, the command's stderr and c2vm's messages all
+	// write to stderr.
 	stderr := &lockedWriter{w: waitWriter{int(os.Stderr.Fd())}}
+	log.SetOutput(stderr)
+	defer log.SetOutput(os.Stderr)
 
 	var input, consoleOutput *os.File
 	var escaped <-chan struct{}
@@ -284,7 +286,7 @@ func (b *Backend) Run(ctx context.Context, spec vm.Spec) (int, error) {
 		defer stop()
 
 		log.Print("press Ctrl-] to stop the vm")
-		t, err := rawTerminal(os.Stdin)
+		t, err := rawTerminal(os.Stdin, stderr)
 		if err != nil {
 			return 0, fmt.Errorf("setting the terminal in raw mode: %w", err)
 		}
