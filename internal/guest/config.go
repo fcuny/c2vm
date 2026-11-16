@@ -51,7 +51,7 @@ const (
 // init whose binary doesn't have it, which the check in init puts there.
 // Change it whenever a c2vm and a c2vm-init built apart would
 // misunderstand each other.
-const Protocol = "c2vm-init protocol 3"
+const Protocol = "c2vm-init protocol 4"
 
 // DefaultPath is the PATH used when the image doesn't set one, the same
 // as Docker's.

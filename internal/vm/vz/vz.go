@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/Code-Hex/vz/v3"
 	"golang.org/x/sys/unix"
@@ -29,8 +30,31 @@ import (
 // says, for the host to see the panic on the console and stop the VM.
 const commandLine = "console=hvc1 ip=dhcp quiet oops=panic panic=0"
 
+// bootDeadline is how long init has to report it started (see
+// guest.UpPort) once the VM has. Before init runs, the kernel configures
+// the network with DHCP: booting takes well under 2s. A VM that misses the deadline most
+// likely lost its network to a race in macOS's NAT: when the last VM on
+// it stops while another VM's network interface is being attached,
+// macOS stops the NAT, and never attaches that interface, so DHCP never
+// completes. Nothing of the command has run yet, and a new VM gets a new
+// interface: Run restarts the VM.
+const bootDeadline = 10 * time.Second
+
+// maxBoots is how many times Run starts a VM whose init misses
+// bootDeadline before it gives up.
+const maxBoots = 3
+
+// errBootStuck is a boot whose init missed bootDeadline.
+var errBootStuck = errors.New("init didn't connect to the host in time")
+
 // Backend runs VMs with Virtualization.framework.
-type Backend struct{}
+type Backend struct {
+	// StuckBoots is how many of each VM's first boots to stop as if
+	// their init had missed bootDeadline. The race that makes a VM lose
+	// its network is too rare for the e2e tests to count on: this has
+	// them exercise the restart instead.
+	StuckBoots int
+}
 
 var _ vm.Backend = (*Backend)(nil)
 
@@ -180,16 +204,16 @@ func configuration(spec vm.Spec, command, kernel serialPort) (*vz.VirtualMachine
 // goes to the guest; escapeKey stops the VM instead, as SIGINT would.
 // Otherwise, the command's stdout and stderr come over vsock, each to
 // its own, and with spec.Stdin, stdin goes to the command over vsock.
-// Run fails if either arrives cut short.
+// Run fails if either arrives cut short. A VM whose init doesn't start
+// within bootDeadline is restarted, up to maxBoots times in all.
 func (b *Backend) Run(ctx context.Context, spec vm.Spec) (int, error) {
 	// The kernel's console, the command's stderr and c2vm's messages all
 	// write to stderr.
 	stderr := &lockedWriter{w: waitWriter{int(os.Stderr.Fd())}}
 	log.SetOutput(stderr)
 	defer log.SetOutput(os.Stderr)
+	s := &session{spec: spec, stderr: stderr}
 
-	var input, consoleOutput *os.File
-	var escaped <-chan struct{}
 	if spec.TTY {
 		stdin, err := nonblockingInput(os.Stdin)
 		if err != nil {
@@ -202,8 +226,8 @@ func (b *Backend) Run(ctx context.Context, spec vm.Spec) (int, error) {
 		}
 		// The console reads from r for as long as the VM runs.
 		defer r.Close()
-		input, escaped = r, esc
-		consoleOutput = os.Stdout
+		s.input, s.escaped = r, esc
+		s.consoleOutput = os.Stdout
 	} else {
 		// The command doesn't use its console: give it a pipe that's
 		// never written to, so it doesn't take any of stdin, and
@@ -219,7 +243,7 @@ func (b *Backend) Run(ctx context.Context, spec vm.Spec) (int, error) {
 			return 0, err
 		}
 		defer devNull.Close()
-		input, consoleOutput = r, devNull
+		s.input, s.consoleOutput = r, devNull
 	}
 
 	// The kernel's console goes to stderr, with c2vm's messages.
@@ -229,36 +253,7 @@ func (b *Backend) Run(ctx context.Context, spec vm.Spec) (int, error) {
 	}
 	// Once the VM has stopped, or failed to start.
 	defer console.drain()
-
-	config, err := configuration(spec, serialPort{input, consoleOutput}, console.port)
-	if err != nil {
-		return 0, err
-	}
-
-	machine, err := vz.NewVirtualMachine(config)
-	if err != nil {
-		return 0, err
-	}
-
-	// Without -t, the command's outputs come over vsock. On a terminal,
-	// stdout and stderr may share a file description with stdin, which
-	// nonblockingInput makes non-blocking.
-	var stdoutCopy, stderrCopy *output
-	if !spec.TTY {
-		stdoutCopy, err = receiveOutput(machine, guest.StdoutPort, "stdout", waitWriter{int(os.Stdout.Fd())})
-		if err != nil {
-			return 0, err
-		}
-		stderrCopy, err = receiveOutput(machine, guest.StderrPort, "stderr", stderr)
-		if err != nil {
-			return 0, err
-		}
-	}
-
-	statuses, err := listenStatus(machine, stdoutCopy, stderrCopy)
-	if err != nil {
-		return 0, err
-	}
+	s.console = console
 
 	if spec.Stdin && !spec.TTY {
 		stdin, err := nonblockingInput(os.Stdin)
@@ -269,40 +264,147 @@ func (b *Backend) Run(ctx context.Context, spec vm.Spec) (int, error) {
 		// nonblockingInput changes stdin's mode, which whatever reads
 		// it after c2vm doesn't expect.
 		defer unix.SetNonblock(int(os.Stdin.Fd()), false)
-		if err := sendStdin(machine, stdin); err != nil {
+		s.stdin = stdin
+	}
+
+	s.signals = make(chan os.Signal, 1)
+	signal.Notify(s.signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(s.signals)
+	defer s.restoreTerminal()
+
+	return boots(maxBoots, func(n int) (int, error) {
+		// Interrupted while the last boot stopped.
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		deadline := bootDeadline
+		if n < b.StuckBoots {
+			deadline = 0
+		}
+		return s.boot(ctx, deadline)
+	})
+}
+
+// boots calls boot until a boot's init doesn't miss bootDeadline, up to
+// max times. n counts the boots from 0.
+func boots(max int, boot func(n int) (int, error)) (int, error) {
+	for n := 0; ; n++ {
+		code, err := boot(n)
+		if !errors.Is(err, errBootStuck) {
+			return code, err
+		}
+		if n+1 >= max {
+			return 0, fmt.Errorf("the vm's init didn't start within %v, %d times in a row, most likely because it got no network address (see Network in c2vm's README)", bootDeadline, max)
+		}
+		log.Printf("the vm's init didn't start within %v, most likely because macOS failed to connect its network: restarting the vm", bootDeadline)
+	}
+}
+
+// session is what Run keeps across the VM's boots: the console, the
+// command's stdin, and the terminal.
+type session struct {
+	spec   vm.Spec
+	stderr io.Writer
+	// input and consoleOutput are the command's console, hvc0.
+	input, consoleOutput *os.File
+	console              *console
+	// stdin is passed to the command over vsock, with spec.Stdin and
+	// without spec.TTY.
+	stdin    *os.File
+	escaped  <-chan struct{}
+	signals  chan os.Signal
+	terminal *terminal
+}
+
+// rawTerminal puts the terminal in raw mode, on the first boot.
+func (s *session) rawTerminal() error {
+	if s.terminal != nil {
+		return nil
+	}
+	log.Print("press Ctrl-] to stop the vm")
+	t, err := rawTerminal(os.Stdin, s.stderr)
+	if err != nil {
+		return fmt.Errorf("setting the terminal in raw mode: %w", err)
+	}
+	s.terminal = t
+	return nil
+}
+
+func (s *session) restoreTerminal() {
+	if s.terminal != nil {
+		s.terminal.restore()
+	}
+}
+
+// boot starts a new VM, waits for it to stop, and returns the command's
+// exit status. It stops the VM and returns errBootStuck if init hasn't
+// connected to the host within deadline.
+func (s *session) boot(ctx context.Context, deadline time.Duration) (int, error) {
+	config, err := configuration(s.spec, serialPort{s.input, s.consoleOutput}, s.console.port)
+	if err != nil {
+		return 0, err
+	}
+
+	machine, err := vz.NewVirtualMachine(config)
+	if err != nil {
+		return 0, err
+	}
+	host := newVsockHost(machine)
+	defer host.close()
+
+	// Without -t, the command's outputs come over vsock. On a terminal,
+	// stdout and stderr may share a file description with stdin, which
+	// nonblockingInput makes non-blocking.
+	var stdoutCopy, stderrCopy *output
+	if !s.spec.TTY {
+		stdoutCopy, err = receiveOutput(host, guest.StdoutPort, "stdout", waitWriter{int(os.Stdout.Fd())})
+		if err != nil {
+			return 0, err
+		}
+		stderrCopy, err = receiveOutput(host, guest.StderrPort, "stderr", s.stderr)
+		if err != nil {
 			return 0, err
 		}
 	}
 
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(signals)
+	statuses, err := listenStatus(host, stdoutCopy, stderrCopy)
+	if err != nil {
+		return 0, err
+	}
 
-	if spec.TTY {
-		stop, err := sendResizes(machine, int(os.Stdin.Fd()))
+	if err := host.listenUp(); err != nil {
+		return 0, err
+	}
+
+	if s.stdin != nil {
+		if err := sendStdin(host, s.stdin); err != nil {
+			return 0, err
+		}
+	}
+
+	if s.spec.TTY {
+		stop, err := sendResizes(host, int(os.Stdin.Fd()))
 		if err != nil {
 			return 0, err
 		}
 		defer stop()
-
-		log.Print("press Ctrl-] to stop the vm")
-		t, err := rawTerminal(os.Stdin, stderr)
-		if err != nil {
-			return 0, fmt.Errorf("setting the terminal in raw mode: %w", err)
+		if err := s.rawTerminal(); err != nil {
+			return 0, err
 		}
-		defer t.restore()
 	}
 
 	if err := machine.Start(); err != nil {
 		return 0, fmt.Errorf("failed to start the vm: %w", err)
 	}
-	if spec.Started != nil {
-		spec.Started()
-	}
+	timer := time.NewTimer(deadline)
+	defer timer.Stop()
+	late := timer.C
+	connected := host.connected
 
 	var interrupted syscall.Signal
-	var panicked bool
-	panics := console.panicked
+	var panicked, stuck bool
+	panics := s.console.panicked
+	escaped := s.escaped
 	states := machine.StateChangedNotify()
 	for {
 		select {
@@ -327,9 +429,41 @@ func (b *Backend) Run(ctx context.Context, spec vm.Spec) (int, error) {
 				if interrupted != 0 {
 					return 128 + int(interrupted), nil
 				}
+				if stuck {
+					return 0, errBootStuck
+				}
 				return 0, errors.New("the vm stopped without reporting the command's exit status")
 			case vz.VirtualMachineStateError:
 				return 0, errors.New("the vm stopped with an error")
+			}
+		case <-connected:
+			// init is up: the network came up with it, and the VM won't
+			// be restarted.
+			connected, late = nil, nil
+			if s.spec.Started != nil {
+				s.spec.Started()
+			}
+		case <-late:
+			late = nil
+			// The VM is already stopping, for another reason.
+			if panicked || interrupted != 0 {
+				continue
+			}
+			// It can't be stopped yet: try again shortly.
+			if !machine.CanStop() {
+				timer.Reset(100 * time.Millisecond)
+				late = timer.C
+				continue
+			}
+			// init may have connected since the deadline: then the boot
+			// goes on. Otherwise, nothing it connects to from now on is
+			// accepted, so this boot can't take what the next one needs.
+			if !host.abandon() {
+				continue
+			}
+			stuck = true
+			if err := machine.Stop(); err != nil {
+				return 0, fmt.Errorf("failed to stop the vm: %w", err)
 			}
 		case <-panics:
 			// The channel is closed: stop waiting on it.
@@ -343,7 +477,7 @@ func (b *Backend) Run(ctx context.Context, spec vm.Spec) (int, error) {
 			if err := machine.Stop(); err != nil {
 				return 0, fmt.Errorf("failed to stop the vm: %w", err)
 			}
-		case sig := <-signals:
+		case sig := <-s.signals:
 			log.Print("stopping the vm")
 			interrupted = sig.(syscall.Signal)
 			if err := machine.Stop(); err != nil {
@@ -366,20 +500,6 @@ func (b *Backend) Run(ctx context.Context, spec vm.Spec) (int, error) {
 	}
 }
 
-// listen listens on port of the VM's vsock device, for connections from
-// the guest.
-func listen(machine *vz.VirtualMachine, port uint32) (*vz.VirtioSocketListener, error) {
-	devices := machine.SocketDevices()
-	if len(devices) != 1 {
-		return nil, fmt.Errorf("expected one vsock device, got %d", len(devices))
-	}
-	listener, err := devices[0].Listen(port)
-	if err != nil {
-		return nil, fmt.Errorf("vsock: listening on port %d: %w", port, err)
-	}
-	return listener, nil
-}
-
 // status is the command's exit status, or why c2vm fails though the
 // command exited: its output was cut short, as docker run fails when
 // the stream of the container's output does.
@@ -392,8 +512,8 @@ type status struct {
 // and sends it on the returned channel once the command's outputs have
 // been written, if they come over vsock: stdout and stderr are nil with
 // -t.
-func listenStatus(machine *vz.VirtualMachine, stdout, stderr *output) (<-chan status, error) {
-	listener, err := listen(machine, guest.StatusPort)
+func listenStatus(host *vsockHost, stdout, stderr *output) (<-chan status, error) {
+	listener, err := host.listen(guest.StatusPort)
 	if err != nil {
 		return nil, err
 	}
@@ -401,9 +521,11 @@ func listenStatus(machine *vz.VirtualMachine, stdout, stderr *output) (<-chan st
 	statuses := make(chan status, 1)
 	go func() {
 		defer listener.Close()
-		conn, err := listener.Accept()
+		conn, err := host.accept(listener)
 		if err != nil {
-			log.Printf("waiting for the exit status: %v", err)
+			if !host.closedEarly() {
+				log.Printf("waiting for the exit status: %v", err)
+			}
 			return
 		}
 		// Closing the connection tells init the status was read, and the
@@ -432,17 +554,19 @@ func listenStatus(machine *vz.VirtualMachine, stdout, stderr *output) (<-chan st
 // sendStdin copies in to init once it connects, and closes the
 // connection when in ends, for the command to read EOF. The command may
 // exit without reading all of it, as with a pipe: that isn't an error.
-func sendStdin(machine *vz.VirtualMachine, in io.Reader) error {
-	listener, err := listen(machine, guest.StdinPort)
+func sendStdin(host *vsockHost, in io.Reader) error {
+	listener, err := host.listen(guest.StdinPort)
 	if err != nil {
 		return err
 	}
 
 	go func() {
 		defer listener.Close()
-		conn, err := listener.Accept()
+		conn, err := host.accept(listener)
 		if err != nil {
-			log.Printf("waiting to pass stdin: %v", err)
+			if !host.closedEarly() {
+				log.Printf("waiting to pass stdin: %v", err)
+			}
 			return
 		}
 		defer conn.Close()

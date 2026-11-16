@@ -111,7 +111,9 @@ A VM also gets the same address as the VM that last held its slot, whatever imag
 ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@192.168.64.36
 ```
 
-If the pool fills up anyway, a VM never gets an address: its kernel retries DHCP (`IP-Config: Reopening network devices...` on stderr) and c2vm hangs until a lease expires. `/var/db/dhcpd_leases` lists the leases. Both of these fix it, and need root:
+The kernel gets the VM's address before c2vm-init starts, which then connects to c2vm. If it hasn't within 10 s, c2vm restarts the VM, which hasn't run anything yet, and gives up after 3 boots. That's for a bug in macOS: when the last VM on the NAT stops while another VM's network is being connected, macOS shuts the NAT down and never connects that VM, whose packets then go nowhere. It's rare, and only happens with VMs starting and stopping at the same time. A new VM gets a new connection.
+
+If the pool fills up anyway, no VM gets an address: its kernel retries DHCP (`IP-Config: Reopening network devices...` on stderr) until c2vm gives up, and every boot fails until a lease expires. `/var/db/dhcpd_leases` lists the leases. Both of these fix it, and need root:
 
 ```sh
 # Shorten leases to 10 minutes.
@@ -144,4 +146,4 @@ Virtualization.framework only lets binaries signed with the `com.apple.security.
 
 ### Testing
 
-`go test ./...` runs the unit tests, which don't boot anything. `make e2e` builds c2vm, with c2vm-init embedded, and boots VMs with them, from `alpine`, to check what commands see and do in the VM: their output and exit status, `-e`, `-i`, `-t`, `-v`, `-init`, `-scratch`, and that VMs reuse MAC addresses. It boots the default kernel, or `C2VM_E2E_KERNEL`: an image, like `ghcr.io/fcuny/c2vm-kernel:7.3`, or by its absolute path a directory laid out like one, or a kernel file, with which the `-scratch` tests are skipped. It needs macOS on Apple silicon and the network. CI can't run it, as GitHub's macOS runners can't boot VMs: run it before opening a PR.
+`go test ./...` runs the unit tests, which don't boot anything. `make e2e` builds c2vm, with c2vm-init embedded, and boots VMs with them, from `alpine`, to check what commands see and do in the VM: their output and exit status, `-e`, `-i`, `-t`, `-v`, `-init`, `-scratch`, that VMs reuse MAC addresses, and that a VM whose init doesn't start is restarted (`C2VM_STUCK_BOOTS` makes c2vm treat its first boots as stuck). It boots the default kernel, or `C2VM_E2E_KERNEL`: an image, like `ghcr.io/fcuny/c2vm-kernel:7.3`, or by its absolute path a directory laid out like one, or a kernel file, with which the `-scratch` tests are skipped. It needs macOS on Apple silicon and the network. CI can't run it, as GitHub's macOS runners can't boot VMs: run it before opening a PR.

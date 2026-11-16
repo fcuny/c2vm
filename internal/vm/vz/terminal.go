@@ -11,7 +11,6 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/Code-Hex/vz/v3"
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 
@@ -69,8 +68,8 @@ func (c crlfWriter) Write(p []byte) (int, error) {
 
 // sendResizes sends the size of the terminal fd to init once it
 // connects, and again whenever it changes, until stop is called.
-func sendResizes(machine *vz.VirtualMachine, fd int) (stop func(), err error) {
-	listener, err := listen(machine, guest.ResizePort)
+func sendResizes(host *vsockHost, fd int) (stop func(), err error) {
+	listener, err := host.listen(guest.ResizePort)
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +78,7 @@ func sendResizes(machine *vz.VirtualMachine, fd int) (stop func(), err error) {
 	signal.Notify(winch, syscall.SIGWINCH)
 	done := make(chan struct{})
 	go func() {
-		conn, err := listener.Accept()
+		conn, err := host.accept(listener)
 		if err != nil {
 			return
 		}
