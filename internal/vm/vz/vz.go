@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Code-Hex/vz/v3"
+	"github.com/Code-Hex/vz/v4"
 	"golang.org/x/sys/unix"
 
 	"fcuny.net/c2vm/internal/guest"
@@ -141,11 +141,6 @@ func configuration(spec vm.Spec, command, kernel serialPort) (*vz.VirtualMachine
 	}
 	var mac *vz.MACAddress
 	if spec.MAC != nil {
-		// vz turns a MAC Virtualization.framework rejects into a nil
-		// address, without an error.
-		if len(spec.MAC) != 6 {
-			return nil, fmt.Errorf("network: invalid MAC address %s: expected 6 bytes", spec.MAC)
-		}
 		mac, err = vz.NewMACAddress(spec.MAC)
 	} else {
 		mac, err = vz.NewRandomLocallyAdministeredMACAddress()
@@ -393,6 +388,16 @@ func (s *session) boot(ctx context.Context, deadline time.Duration) (int, error)
 		}
 	}
 
+	// A notification only tells the state changed: vz drops one the
+	// channel has no room for, as while the loop waits for Stop, and
+	// replays none from before this, so it starts before the VM does.
+	states := make(chan vz.VirtualMachineState, 1)
+	stopStates, err := machine.StateChangedNotify(states)
+	if err != nil {
+		return 0, fmt.Errorf("watching the vm's state: %w", err)
+	}
+	defer stopStates()
+
 	if err := machine.Start(); err != nil {
 		return 0, fmt.Errorf("failed to start the vm: %w", err)
 	}
@@ -405,11 +410,10 @@ func (s *session) boot(ctx context.Context, deadline time.Duration) (int, error)
 	var panicked, stuck bool
 	panics := s.console.panicked
 	escaped := s.escaped
-	states := machine.StateChangedNotify()
 	for {
 		select {
-		case state := <-states:
-			switch state {
+		case <-states:
+			switch machine.State() {
 			case vz.VirtualMachineStateStopped:
 				log.Print("vm stopped")
 				// init waits for the status to be read before it stops

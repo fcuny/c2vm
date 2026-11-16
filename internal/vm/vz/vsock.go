@@ -9,7 +9,7 @@ import (
 	"net"
 	"sync"
 
-	"github.com/Code-Hex/vz/v3"
+	"github.com/Code-Hex/vz/v4"
 
 	"fcuny.net/c2vm/internal/guest"
 )
