@@ -70,7 +70,7 @@ def output(*args: str) -> str:
 
 def e2e_image() -> str:
     """The image the e2e tests boot, to boot the same one."""
-    m = re.search(r'^const image = "([^"]+)"', (root / "e2e" / "e2e_test.go").read_text(), re.M)
+    m = re.search(r'^const imageTag = "([^"]+)"', (root / "e2e" / "e2e_test.go").read_text(), re.M)
     if not m:
         raise SetupError("can't find the image in e2e/e2e_test.go")
     return m[1]
