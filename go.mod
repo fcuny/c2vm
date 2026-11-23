@@ -3,7 +3,7 @@ module fcuny.net/c2vm
 go 1.27.4
 
 require (
-	github.com/Code-Hex/vz/v4 v4.0.0-20261107060947-64cc34bcd7d0
+	github.com/Code-Hex/vz/v4 v4.0.0-20261122092410-ffbfbb031fb5
 	github.com/Microsoft/hcsshim v0.14.1
 	github.com/creack/pty v1.1.24
 	github.com/google/go-containerregistry v0.22.1

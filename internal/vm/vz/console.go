@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Code-Hex/vz/v4"
 	"golang.org/x/sys/unix"
 )
 
@@ -35,6 +36,9 @@ type console struct {
 	// writes to idle, which keeps its input open.
 	port serialPort
 	idle *os.File
+	// attachments are those of port that aren't closed yet. Each holds
+	// its own copy of port's descriptors.
+	attachments []io.Closer
 
 	r    *os.File
 	w    io.Writer
@@ -93,6 +97,30 @@ func watchConsole(w io.Writer) (*console, error) {
 	}
 	go c.copy()
 	return c, nil
+}
+
+// attach returns a new attachment of the console's port, for a VM's
+// configuration. Call release once the VM has stopped.
+func (c *console) attach() (*vz.FileHandleSerialPortAttachment, error) {
+	a, err := vz.NewFileHandleSerialPortAttachment(c.port.input, c.port.output)
+	if err != nil {
+		return nil, err
+	}
+	c.attachments = append(c.attachments, a)
+	return a, nil
+}
+
+// release closes the attachments of the console's port whose VMs have
+// stopped. vz refuses to close one a VM still uses: it's kept, for
+// drain to try again.
+func (c *console) release() {
+	held := c.attachments[:0]
+	for _, a := range c.attachments {
+		if err := a.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+			held = append(held, a)
+		}
+	}
+	c.attachments = held
 }
 
 func (c *console) copy() {
@@ -203,13 +231,11 @@ func (c *console) reportPanic() {
 }
 
 // drain copies what's left of the console's output, and stops. Call it
-// once the VM has stopped. Virtualization.framework keeps its own copy of
-// the pipe's write end, so the read end never gets EOF: read until the
-// pipe is empty instead.
+// once the last VM has stopped. Each attachment holds a copy of the
+// pipe's write end: once they and the console's own are closed, the copy
+// reads to EOF. If an attachment's VM didn't stop, the copy is stopped
+// instead, and the pipe read until it's empty.
 func (c *console) drain() {
-	// The deadline stops the pending read, without losing what it read.
-	_ = c.r.SetReadDeadline(time.Now())
-	<-c.done
 	defer func() {
 		c.flush()
 		c.mu.Lock()
@@ -220,11 +246,21 @@ func (c *console) drain() {
 		if c.grace != nil {
 			c.grace.Stop()
 		}
-		for _, f := range []*os.File{c.r, c.port.input, c.port.output, c.idle} {
+		for _, f := range []*os.File{c.r, c.port.input, c.idle} {
 			f.Close()
 		}
 	}()
 
+	c.release()
+	_ = c.port.output.Close()
+	if len(c.attachments) == 0 {
+		<-c.done
+		return
+	}
+
+	// The deadline stops the pending read, without losing what it read.
+	_ = c.r.SetReadDeadline(time.Now())
+	<-c.done
 	// The pipe is non-blocking: Control reads it without waiting.
 	rc, err := c.r.SyscallConn()
 	if err != nil {
