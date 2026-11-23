@@ -75,7 +75,7 @@ type serialPort struct{ input, output *os.File }
 
 // configuration returns the VM's configuration, with the command's
 // console, hvc0, and the kernel's, hvc1.
-func configuration(spec vm.Spec, command, kernel serialPort) (*vz.VirtualMachineConfiguration, error) {
+func configuration(spec vm.Spec, command, kernel vz.SerialPortAttachment) (*vz.VirtualMachineConfiguration, error) {
 	bootLoader, err := vz.NewLinuxBootLoader(spec.Kernel,
 		vz.WithCommandLine(commandLine),
 		vz.WithInitrd(spec.Initrd),
@@ -91,11 +91,7 @@ func configuration(spec vm.Spec, command, kernel serialPort) (*vz.VirtualMachine
 
 	// The guest names the consoles in this order.
 	var consoles []*vz.VirtioConsoleDeviceSerialPortConfiguration
-	for _, port := range []serialPort{command, kernel} {
-		attachment, err := vz.NewFileHandleSerialPortAttachment(port.input, port.output)
-		if err != nil {
-			return nil, fmt.Errorf("console: %w", err)
-		}
+	for _, attachment := range []vz.SerialPortAttachment{command, kernel} {
 		console, err := vz.NewVirtioConsoleDeviceSerialPortConfiguration(attachment)
 		if err != nil {
 			return nil, fmt.Errorf("console: %w", err)
@@ -335,7 +331,22 @@ func (s *session) restoreTerminal() {
 // exit status. It stops the VM and returns errBootStuck if init hasn't
 // connected to the host within deadline.
 func (s *session) boot(ctx context.Context, deadline time.Duration) (int, error) {
-	config, err := configuration(s.spec, serialPort{s.input, s.consoleOutput}, s.console.port)
+	// Each attachment holds copies of its files' descriptors, which Close
+	// frees once the VM has stopped: the next boot gets its own. If the VM
+	// didn't stop, the command's console's are left to the garbage
+	// collector.
+	command, err := vz.NewFileHandleSerialPortAttachment(s.input, s.consoleOutput)
+	if err != nil {
+		return 0, fmt.Errorf("console: %w", err)
+	}
+	defer command.Close()
+	kernel, err := s.console.attach()
+	if err != nil {
+		return 0, fmt.Errorf("console: %w", err)
+	}
+	defer s.console.release()
+
+	config, err := configuration(s.spec, command, kernel)
 	if err != nil {
 		return 0, err
 	}

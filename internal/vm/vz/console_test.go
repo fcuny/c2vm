@@ -6,11 +6,13 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/Code-Hex/vz/v4"
 	"golang.org/x/sys/unix"
 )
 
@@ -83,8 +85,7 @@ func TestConsolePanicGrace(t *testing.T) {
 	}
 }
 
-// TestConsoleCopy checks the console's output arrives whole, while the
-// pipe's write end stays open, as Virtualization.framework keeps it.
+// TestConsoleCopy checks the console's output arrives whole.
 func TestConsoleCopy(t *testing.T) {
 	var out syncBuffer
 	c, err := watchConsole(&out)
@@ -104,8 +105,19 @@ func TestConsoleCopy(t *testing.T) {
 	}
 }
 
-// TestConsoleDrain checks drain copies what's still in the pipe when
-// the copy stops.
+// closer is an attachment that Close returns err for.
+type closer struct {
+	err    error
+	closes int
+}
+
+func (c *closer) Close() error {
+	c.closes++
+	return c.err
+}
+
+// TestConsoleDrain checks drain copies what's still in the pipe when an
+// attachment's VM didn't stop, so the pipe gets no EOF.
 func TestConsoleDrain(t *testing.T) {
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -116,7 +128,8 @@ func TestConsoleDrain(t *testing.T) {
 	done := make(chan struct{})
 	close(done)
 	var out syncBuffer
-	c := &console{r: r, w: &out, done: done, panicked: make(chan struct{})}
+	inUse := &closer{err: vz.ErrSerialPortAttachmentInUse}
+	c := &console{r: r, w: &out, done: done, panicked: make(chan struct{}), attachments: []io.Closer{inUse}}
 
 	if _, err := w.WriteString(panicOutput); err != nil {
 		t.Fatal(err)
@@ -127,6 +140,103 @@ func TestConsoleDrain(t *testing.T) {
 	}
 	if !panicked(c) {
 		t.Error("the panic in the drained output wasn't reported")
+	}
+	if inUse.closes != 1 {
+		t.Errorf("drain closed the attachment in use %d times, want 1", inUse.closes)
+	}
+}
+
+// TestConsoleDrainHeld checks drain stops the copy, without losing what
+// it read, when a VM that didn't stop still holds the pipe's write end.
+func TestConsoleDrainHeld(t *testing.T) {
+	var out syncBuffer
+	c, err := watchConsole(&out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The VM's copy of the write end, which its attachment can't close.
+	held, err := unix.Dup(int(c.port.output.Fd()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(held)
+	c.attachments = []io.Closer{&closer{err: vz.ErrSerialPortAttachmentInUse}}
+	// More than the pipe holds: the copy is reading when drain starts.
+	want := strings.Repeat("x", 1<<20)
+	if _, err := c.port.output.WriteString(want); err != nil {
+		t.Fatal(err)
+	}
+
+	drained := make(chan struct{})
+	go func() {
+		c.drain()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-time.After(10 * time.Second):
+		t.Fatal("drain didn't stop the copy")
+	}
+	if got := out.String(); got != want {
+		t.Errorf("drained %d bytes, want %d", len(got), len(want))
+	}
+}
+
+// TestConsoleDrainEOF checks drain closes the attachments, whose copies
+// of the pipe's write end would otherwise keep the copy from reaching
+// EOF: drain would never return.
+func TestConsoleDrainEOF(t *testing.T) {
+	var out syncBuffer
+	c, err := watchConsole(&out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Without a VM, nothing uses them: Close succeeds.
+	for range 2 {
+		if _, err := c.attach(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := "c2vm-init: eth0: 192.168.64.7/24\r\n" + panicOutput
+	if _, err := c.port.output.WriteString(want); err != nil {
+		t.Fatal(err)
+	}
+
+	drained := make(chan struct{})
+	go func() {
+		c.drain()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-time.After(10 * time.Second):
+		t.Fatal("drain didn't return: the pipe got no EOF")
+	}
+	if got := out.String(); got != want {
+		t.Errorf("drained %q, want %q", got, want)
+	}
+	if len(c.attachments) != 0 {
+		t.Errorf("%d attachments left open", len(c.attachments))
+	}
+}
+
+// TestConsoleRelease checks release keeps only the attachments a VM
+// still uses.
+func TestConsoleRelease(t *testing.T) {
+	closed := &closer{}
+	inUse := &closer{err: vz.ErrSerialPortAttachmentInUse}
+	already := &closer{err: vz.ErrSerialPortAttachmentClosed}
+	failed := &closer{err: unix.EIO}
+	c := &console{attachments: []io.Closer{closed, inUse, already, failed}}
+
+	c.release()
+	if want := []io.Closer{inUse, failed}; !slices.Equal(c.attachments, want) {
+		t.Errorf("kept %v, want %v", c.attachments, want)
+	}
+	for _, a := range []*closer{closed, inUse, already, failed} {
+		if a.closes != 1 {
+			t.Errorf("%v closed %d times, want 1", a.err, a.closes)
+		}
 	}
 }
 

@@ -1,7 +1,7 @@
 cloud.google.com/go v0.26.0/go.mod h1:aQUYkXzVsufM+DwF1aE+0xfcU+56JwCaLick0ClmMTw=
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
-github.com/Code-Hex/vz/v4 v4.0.0-20261107060947-64cc34bcd7d0 h1:VNL1JrU6cgZVZLYuEMN/IgtF6c+K4318UBlQYmoj7QE=
-github.com/Code-Hex/vz/v4 v4.0.0-20261107060947-64cc34bcd7d0/go.mod h1:fWBIHoJXkF61OaLwC7KFu1oOyooNdVDKs2bYpFalgWI=
+github.com/Code-Hex/vz/v4 v4.0.0-20261122092410-ffbfbb031fb5 h1:6RM+zF8UNNK4BOO4mcBMnG596KKMySy8Xz1hle6w9w4=
+github.com/Code-Hex/vz/v4 v4.0.0-20261122092410-ffbfbb031fb5/go.mod h1:fWBIHoJXkF61OaLwC7KFu1oOyooNdVDKs2bYpFalgWI=
 github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERoyfY=
 github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
 github.com/Microsoft/hcsshim v0.14.1 h1:CMuB3fqQVfPdhyXhUqYdUmPUIOhJkmghCx3dJet8Cqs=
