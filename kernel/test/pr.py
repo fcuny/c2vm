@@ -55,6 +55,7 @@ p rng "$(cat /sys/devices/virtual/misc/hw_random/rng_current)"
 p mount "$(cat /mnt/token)"
 p erofs "$(grep -cw erofs /proc/filesystems)"
 p verity "$(cat /sys/fs/ext4/features/verity 2>/dev/null)"
+p vfat "$(grep -cw vfat /proc/filesystems)"
 dmesg -r | grep -E '^<[0-3]>' | while read -r line; do p dmesg "$line"; done
 p done
 """
@@ -162,6 +163,7 @@ def boot(kernel: Path, release: str, tmp: Path) -> tuple[list[tuple[str, bool]],
         ("reads a `-v` mount", got.get("mount") == token),
         ("has EROFS, for composefs", got.get("erofs") == "1"),
         ("ext4 has fs-verity, for composefs", got.get("verity") == "supported"),
+        ("has VFAT, for an ESP", got.get("vfat") == "1"),
         ("no errors in dmesg", not errors),
     ]
     return checks, errors

@@ -31,6 +31,11 @@ CONFIG_EROFS_FS=y
 CONFIG_EROFS_FS_XATTR=y
 CONFIG_EROFS_FS_BACKED_BY_FILE=y
 # CONFIG_EROFS_FS_ZIP is not set
+# bootc install also writes and mounts the ESP, which is FAT. Mounting
+# needs the default codepage and iocharset.
+CONFIG_VFAT_FS=y
+CONFIG_NLS_CODEPAGE_437=y
+CONFIG_NLS_ISO8859_1=y
 
 # ip=dhcp on the command line.
 CONFIG_IP_PNP=y
