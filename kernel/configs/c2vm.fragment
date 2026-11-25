@@ -23,6 +23,15 @@ CONFIG_PROC_FS=y
 CONFIG_SYSFS=y
 CONFIG_UNIX98_PTYS=y
 
+# composefs, which bootc uses to deploy images: fs-verity on ext4 for
+# its objects, and EROFS, mounted from a file, for its metadata images.
+# Those images aren't compressed.
+CONFIG_FS_VERITY=y
+CONFIG_EROFS_FS=y
+CONFIG_EROFS_FS_XATTR=y
+CONFIG_EROFS_FS_BACKED_BY_FILE=y
+# CONFIG_EROFS_FS_ZIP is not set
+
 # ip=dhcp on the command line.
 CONFIG_IP_PNP=y
 CONFIG_IP_PNP_DHCP=y
