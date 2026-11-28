@@ -23,6 +23,24 @@ CONFIG_PROC_FS=y
 CONFIG_SYSFS=y
 CONFIG_UNIX98_PTYS=y
 
+# composefs, which bootc uses to deploy images: fs-verity on ext4 for
+# its objects, and EROFS, mounted from a file, for its metadata images.
+# Those images aren't compressed.
+CONFIG_FS_VERITY=y
+CONFIG_EROFS_FS=y
+CONFIG_EROFS_FS_XATTR=y
+CONFIG_EROFS_FS_BACKED_BY_FILE=y
+# CONFIG_EROFS_FS_ZIP is not set
+# bootc install partitions disks with GPT, and needs the kernel to read
+# the table back. Without it, only udev's watch on the device adds the
+# partitions, from userspace, and only if it wins the race with bootc.
+CONFIG_EFI_PARTITION=y
+# bootc install also writes and mounts the ESP, which is FAT. Mounting
+# needs the default codepage and iocharset.
+CONFIG_VFAT_FS=y
+CONFIG_NLS_CODEPAGE_437=y
+CONFIG_NLS_ISO8859_1=y
+
 # ip=dhcp on the command line.
 CONFIG_IP_PNP=y
 CONFIG_IP_PNP_DHCP=y
