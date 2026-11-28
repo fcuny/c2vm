@@ -277,17 +277,66 @@ func run(config guest.Config, conns *[]*os.File) (status guest.Status, err error
 	return status, err
 }
 
-// dialHost connects to port on the host, over vsock.
+// dialHost connects to port on the host, over vsock. The socket it
+// returns is blocking.
 func dialHost(port uint32) (int, error) {
-	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC|unix.SOCK_NONBLOCK, 0)
 	if err != nil {
 		return -1, err
 	}
-	if err := unix.Connect(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_HOST, Port: port}); err != nil {
+	if err := connect(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_HOST, Port: port}); err != nil {
 		unix.Close(fd)
 		return -1, fmt.Errorf("connect to the host's port %d: %w", port, err)
 	}
 	return fd, nil
+}
+
+// poll is unix.Poll. Tests replace it.
+var poll = unix.Poll
+
+// connect connects fd, a nonblocking socket, to sa, then makes fd
+// blocking.
+//
+// It waits for the connection in poll, not in a blocking connect. A
+// signal, such as the Go runtime's preemption signal, makes a blocking
+// vsock connect fail with EINTR: vsock's connect has a timeout, so the
+// kernel can't restart it. The kernel then drops the attempt, even if
+// the host already accepted it. The host accepts one connection per
+// port, so dialing again would leave it holding the dropped one. A
+// nonblocking connect goes on whatever signals come, and poll can be
+// called again.
+func connect(fd int, sa unix.Sockaddr) error {
+	err := unix.Connect(fd, sa)
+	if errors.Is(err, unix.EINPROGRESS) {
+		err = waitConnected(fd)
+	}
+	if err != nil {
+		return err
+	}
+	return unix.SetNonblock(fd, false)
+}
+
+// waitConnected waits for the connection fd started to succeed or fail.
+func waitConnected(fd int) error {
+	fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLOUT}}
+	for {
+		_, err := poll(fds, -1)
+		if errors.Is(err, unix.EINTR) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("poll: %w", err)
+		}
+		break
+	}
+	soErr, err := unix.GetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_ERROR)
+	if err != nil {
+		return fmt.Errorf("getsockopt SO_ERROR: %w", err)
+	}
+	if soErr != 0 {
+		return unix.Errno(soErr)
+	}
+	return nil
 }
 
 // openStdin connects to the host for the command's stdin, which ends
