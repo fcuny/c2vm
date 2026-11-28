@@ -44,6 +44,18 @@ const bootDeadline = 10 * time.Second
 // bootDeadline before it gives up.
 const maxBoots = 3
 
+// diskCaching is how the host caches every disk. Automatic, which
+// behaves like uncached, corrupts guest memory when macOS is short of
+// memory. The guest reads 4 KiB into one of the 4 KiB pages that share
+// a 16 KiB host page. If macOS had compressed or swapped that host page
+// out, the other three come back zeroed. Guest pages of 16 KiB don't
+// avoid it, but cached disks did, in every run of a reproducer that
+// zeroed most of its pages otherwise. See
+// https://github.com/fcuny/c2vm/issues/118, and
+// https://github.com/utmapp/UTM/issues/4840 for the filesystem
+// corruption it causes.
+const diskCaching = vz.DiskImageCachingModeCached
+
 // errBootStuck is a boot whose init missed bootDeadline.
 var errBootStuck = errors.New("init didn't connect to the host in time")
 
@@ -100,7 +112,8 @@ func configuration(spec vm.Spec, command, kernel vz.SerialPortAttachment) (*vz.V
 	}
 	config.SetSerialPortsVirtualMachineConfiguration(consoles)
 
-	disk, err := vz.NewDiskImageStorageDeviceAttachment(spec.Image, true)
+	disk, err := vz.NewDiskImageStorageDeviceAttachmentWithCacheAndSync(spec.Image, true,
+		diskCaching, vz.DiskImageSynchronizationModeFull)
 	if err != nil {
 		return nil, fmt.Errorf("image %s: %w", spec.Image, err)
 	}
@@ -113,9 +126,10 @@ func configuration(spec vm.Spec, command, kernel vz.SerialPortAttachment) (*vz.V
 	disks := []vz.StorageDeviceConfiguration{block}
 	if spec.Scratch != "" {
 		// Its contents are thrown away with the VM, so the host never
-		// has to flush them to storage when the guest asks it to.
+		// has to flush them to storage when the guest asks it to. Its
+		// writes stay in host memory until macOS writes them back.
 		scratch, err := vz.NewDiskImageStorageDeviceAttachmentWithCacheAndSync(spec.Scratch, false,
-			vz.DiskImageCachingModeAutomatic, vz.DiskImageSynchronizationModeNone)
+			diskCaching, vz.DiskImageSynchronizationModeNone)
 		if err != nil {
 			return nil, fmt.Errorf("scratch disk %s: %w", spec.Scratch, err)
 		}
